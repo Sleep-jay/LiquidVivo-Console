@@ -1,12 +1,32 @@
 const NAME = 'LiquidVivo 管理员';
 
 export function totpQrSource(value) {
-  let svg=String(value||'');
-  for(const prefix of ['data:image/svg+xml;utf-8,','data:image/svg+xml,'])
-    if(svg.startsWith(prefix)){svg=svg.slice(prefix.length);break;}
-  if(svg.startsWith('%3C')||svg.startsWith('%3c'))svg=decodeURIComponent(svg);
-  if(svg.length>100000||!svg.trimStart().startsWith('<svg'))throw Error('验证器二维码格式无效，请重新连接。');
+  let svg=String(value||'').trim();
+  if(svg.length>160000)throw Error('验证器二维码内容过大');
+  const uri=svg.match(/^data:image\/svg\+xml((?:;[^,]*)?),([\s\S]*)$/i);
+  if(uri){svg=/;base64(?:;|$)/i.test(uri[1])?atob(uri[2]):uri[2];}
+  if(!svg.trimStart().startsWith('<')&&/%[0-9a-f]{2}/i.test(svg))svg=decodeURIComponent(svg);
+  svg=svg.replace(/^\uFEFF/,'').trimStart();
+  // Real QR generators may prefix SVG with an XML declaration, comments or an SVG DTD.
+  // Remove declarations before rendering as an isolated SVG image. Never insert SVG as HTML.
+  for(let i=0;i<12;i++){
+    const next=svg.replace(/^(?:<\?xml[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE\s+svg\s+[^>\[]*>)[\s]*/i,'');
+    if(next===svg)break;svg=next;
+  }
+  if(svg.length>100000||!/^<svg(?:\s|>)/.test(svg))throw Error('验证器二维码格式无效');
+  if(typeof DOMParser!=='undefined'){
+    const doc=new DOMParser().parseFromString(svg,'image/svg+xml');
+    if(doc.querySelector('parsererror')||doc.documentElement.localName!=='svg'||doc.documentElement.namespaceURI!=='http://www.w3.org/2000/svg')throw Error('验证器二维码格式无效');
+  }
   return 'data:image/svg+xml,'+encodeURIComponent(svg);
+}
+
+export function enrollmentPresentation(totp){
+  const secret=typeof totp?.secret==='string'&&/^[A-Z2-7]{16,256}={0,6}$/.test(totp.secret)?totp.secret:null;
+  let qr=null;
+  try{qr=totpQrSource(totp?.qr_code);}catch{/* A display failure must not block a valid manual TOTP setup. */}
+  if(!qr&&!secret)throw Error('验证器配置未完整返回，请重新连接。');
+  return {qr,secret};
 }
 
 /** Single-flight per account; secrets live only in this page's memory. */

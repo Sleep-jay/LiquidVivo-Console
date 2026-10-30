@@ -1,7 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createMfaCoordinator,totpQrSource} from '../src/mfa.js';
+import {createMfaCoordinator,totpQrSource,enrollmentPresentation} from '../src/mfa.js';
 const name='LiquidVivo 管理员';
+test('XML declaration, BOM, comments and SVG document type normalize correctly',()=>{
+ const svg='<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+ const prefix='\uFEFF<?xml version="1.0" encoding="UTF-8"?>\n<!-- QR -->\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n';
+ assert.equal(totpQrSource(prefix+svg),totpQrSource(svg));
+ assert.equal(totpQrSource('data:image/svg+xml;utf-8,'+prefix+svg),totpQrSource(svg));
+ assert.equal(totpQrSource('data:image/svg+xml;charset=utf-8,'+encodeURIComponent(prefix+svg)),totpQrSource(svg));
+ assert.equal(totpQrSource('data:image/svg+xml;base64,'+btoa(svg)),totpQrSource(svg));
+});
+test('manual setup survives missing or unsupported QR while malformed secret is rejected',()=>{
+ const secret='JBSWY3DPEHPK3PXP'; // Public test fixture only.
+ assert.deepEqual(enrollmentPresentation({secret,qr_code:'invalid'}),{qr:null,secret});
+ assert.throws(()=>enrollmentPresentation({secret:'not-a-secret',qr_code:'invalid'}));
+ assert.throws(()=>totpQrSource('data:text/html,<script>bad()</script>'));
+});
 test('QR handles SDK data URI without wrapping a URI as SVG text',()=>{
  const svg='<svg xmlns="http://www.w3.org/2000/svg"></svg>';
  const expected='data:image/svg+xml,'+encodeURIComponent(svg);
