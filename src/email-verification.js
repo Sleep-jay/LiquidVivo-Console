@@ -1,14 +1,25 @@
 const KEY='lv-admin-pending-email';
-export function createEmailConfirmation({auth,rpc,storage,now=Date.now}) {
+export function createEmailConfirmation({auth,rpc,storage,now=Date.now,diagnose=async()=>''}) {
   return {
     async send(email,userId){
+      let stage='登记邮箱确认';
+      try {
       const token=await rpc('lv_admin_begin_email');
       const pending={token,userId,expires:now()+15*60000,sent:0};
       storage.setItem(KEY,JSON.stringify(pending));
+      stage='请求发送邮件';
       const {error}=await auth.signInWithOtp({email,options:{shouldCreateUser:false}});
       if(error)throw error;
       pending.sent=now();
       storage.setItem(KEY,JSON.stringify(pending));
+      } catch(error) {
+        const message=String(error?.message||error||'请求失败');
+        let network='';
+        if(/fetch|network|timeout|load failed/i.test(message)) {
+          try {network=await diagnose();}catch {network='连接检查失败';}
+        }
+        throw Error(`${stage}失败：${message}${network?'；'+network:''}`);
+      }
     },
     async verify(email,userId,code){
       if(!/^[0-9]{6,10}$/.test(code))throw Error('请输入邮件中的数字验证码');

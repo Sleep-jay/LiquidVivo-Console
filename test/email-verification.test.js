@@ -21,6 +21,16 @@ test('failed delivery request does not start a successful-send cooldown or grant
  assert.equal(f.client.lastSent(),0);
  assert.equal(f.calls.filter(x=>x[0]==='lv_admin_complete_email').length,0);
 });
+test('send errors distinguish server challenge from email request without granting rights',async()=>{
+ const f=setup();let checks=0;
+ const client=createEmailConfirmation({auth:f.auth,rpc:async()=>{throw Error('Failed to fetch');},
+  storage:f.storage,diagnose:async()=>{checks++;return '腾讯云接口 HTTP 200';}});
+ await assert.rejects(client.send('owner@example.com','owner'),/登记邮箱确认失败.*腾讯云接口 HTTP 200/);
+ assert.equal(checks,1);assert.equal(f.calls.length,0);
+ f.auth.signInWithOtp=async()=>({error:Error('SMTP unavailable')});
+ await assert.rejects(f.client.send('owner@example.com','owner'),/请求发送邮件失败.*SMTP unavailable/);
+ assert.equal(f.client.lastSent(),0);
+});
 test('invalid or expired local step never calls email verification',async()=>{
  const f=setup();await assert.rejects(f.client.verify('x','owner','123456'),/失效/);
  await f.client.send('x','owner');f.advance();await assert.rejects(f.client.verify('x','owner','123456'),/失效/);

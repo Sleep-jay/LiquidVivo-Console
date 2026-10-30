@@ -3,6 +3,7 @@ import {createAutoRefresh} from './auto-refresh.js';
 import { createClient } from '@supabase/supabase-js';
 import { config } from './config.js';
 import { gatewayFetch } from './gateway-fetch.js';
+import { diagnoseGateway } from './gateway-diagnostics.js';
 import './style.css';
 import './plain.css';
 import './member.css';
@@ -23,7 +24,7 @@ const api = createClient(config.url, config.publishableKey, {global:{fetch:gatew
 let session, admin=false, section='devices', devices=[], entitlements=[], messages=[], campaigns=[], audit=[], selected=new Set(), sort='created_at', direction=-1;
 let authMode='login', authBusy=false, recovery=false;
 let sponsorOrders=[],feedbackItems=[],sponsorReady=false;
-const emailConfirmation=createEmailConfirmation({auth:api.auth,rpc,storage:sessionStorage});
+const emailConfirmation=createEmailConfirmation({auth:api.auth,rpc,storage:sessionStorage,diagnose:()=>diagnoseGateway(config)});
 let bootFlight=null, workspaceReady=false, viewEpoch=0;
 let devicePage=1,devicePageSize=10;
 const icons = {devices:'▦',campaigns:'◷',messages:'▤',audit:'↗',account:'◉',sponsor:'♡',feedback:'▱'};
