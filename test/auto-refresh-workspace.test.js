@@ -3,20 +3,21 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 import {createAutoRefresh} from '../src/auto-refresh.js';
+import {authFlowType} from '../src/recovery.js';
 
 // Exercise the actual load/refresh functions with controlled transport and DOM.
 function workspace({errorTable,waitForExtra}={}){
   const root={querySelector:()=>null,querySelectorAll:()=>[],contains:()=>false};
   const api={auth:{onAuthStateChange(){}},rpc:name=>query(name),from:name=>query(name)};
   function query(name){
-    const result=()=>({data:name==='lv_is_admin'||name==='lv_admin_session_ready'?true:
+    const result=()=>({data:['lv_is_admin','lv_admin_session_ready','lv_user_session_active'].includes(name)?true:
       name==='lv_admin_devices'?[{id:'new-device',device_hash:'abc',last_seen:'2026-10-30T12:00:00Z'}]:[],
       error:name===errorTable?{message:'network failure'}:null});
     const q={select:()=>q,order:()=>q,limit:()=>q,abortSignal:()=>q,
       then:(resolve,reject)=>(name==='lv_feedback'&&waitForExtra?waitForExtra:Promise.resolve()).then(result).then(resolve,reject)};
     return q;
   }
-  const context=vm.createContext({createAutoRefresh,createClient:()=>api,config:{},gatewayFetch(){},
+  const context=vm.createContext({createAutoRefresh,authFlowType,createClient:()=>api,config:{},gatewayFetch(){},
     createEmailConfirmation:()=>({}),sessionStorage:{},localStorage:{},AbortSignal,
     setTimeout,clearTimeout,document:{querySelector:()=>null,activeElement:null},window:{},
   });

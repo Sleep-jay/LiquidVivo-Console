@@ -4,6 +4,8 @@ import {audienceFields,bindAudiencePicker,messageTargets} from './message-audien
 import {searchItems,matches} from './search.js';
 import {deviceFilterOptions,matchesDeviceFilter,deviceSearchFields} from './device-filters.js';
 import {messageKinds,messageStates,messageState,messageCards,messagePayload} from './message-management.js';
+import {accountFilters,accountMatches,accountSearchFields,accountList,accountActions,accountForm,accountActionData} from './accounts.js';
+import {authFlowType} from './recovery.js';
 import { createClient } from '@supabase/supabase-js';
 import { config } from './config.js';
 import { gatewayFetch } from './gateway-fetch.js';
@@ -24,18 +26,19 @@ const storage = {
   setItem: (k,v) => { const persistent = localStorage.getItem(storeKey)==='yes'; (persistent?localStorage:sessionStorage).setItem(k,v); (persistent?sessionStorage:localStorage).removeItem(k); },
   removeItem: k => { sessionStorage.removeItem(k); localStorage.removeItem(k); },
 };
-const api = createClient(config.url, config.publishableKey, {global:{fetch:gatewayFetch},auth:{storage,storageKey:config.authStorageKey,persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,flowType:'pkce'}});
+const api = createClient(config.url, config.publishableKey, {global:{fetch:gatewayFetch},auth:{storage,storageKey:config.authStorageKey,persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,flowType:authFlowType(globalThis.location?.hash)}});
 let session, admin=false, section='devices', devices=[], entitlements=[], messages=[], campaigns=[], audit=[], selected=new Set(), sort='created_at', direction=-1;
 let authMode='login', authBusy=false, recovery=false;
 let sponsorOrders=[],feedbackItems=[],sponsorReady=false,messageReady=false;
+let accounts=[],accountSelected=new Set(),accountCursor=null,accountTotal=0,accountReady=false,accountBusy=false,accountError='',includeInstallations=false,accountLoadToken=0,registrationPolicy=null;
 let deviceQuery='',deviceFilter='all';
 const listStates=new Map();
 const listState=()=>{if(!listStates.has(section))listStates.set(section,{query:'',filter:'all'});return listStates.get(section);};
 const emailConfirmation=createEmailConfirmation({auth:api.auth,rpc,storage:sessionStorage,diagnose:()=>diagnoseGateway(config)});
 let bootFlight=null, workspaceReady=false, viewEpoch=0;
 let devicePage=1,devicePageSize=10;
-const icons = {devices:'▦',campaigns:'◷',messages:'▤',audit:'↗',account:'◉',sponsor:'♡',feedback:'▱'};
-const names = {devices:'设备与权益',campaigns:'限免活动',messages:'消息与内容',audit:'操作记录',account:'账号设置',sponsor:'赞助审核',feedback:'用户反馈'};
+const icons = {devices:'▦',campaigns:'◷',messages:'▤',audit:'↗',users:'♙',account:'◉',sponsor:'♡',feedback:'▱'};
+const names = {devices:'设备与权益',campaigns:'限免活动',messages:'消息与内容',audit:'操作记录',users:'账号管理',account:'账号设置',sponsor:'赞助审核',feedback:'用户反馈'};
 const time = v => v ? new Date(v).toLocaleString('zh-CN',{hour12:false}) : '尚未联系';
 const localDate = v => { const d=new Date(v); return new Date(d-d.getTimezoneOffset()*60000).toISOString().slice(0,16); };
 const dateField=(name,label,value)=>`<label>${label}<input name="${name}" type="datetime-local" value="${localDate(value)}" required></label>`;
@@ -45,7 +48,7 @@ function errorText(e){const t=e?.message||'操作失败，请重试';if(/relatio
 async function rpc(name,args){const {data,error}=await api.rpc(name,args);if(error)throw error;return data;}
 async function hashDevice(code){if(!/^LV[12]-[A-Z2-7]{51}[AQ]$/.test(code))throw Error('请粘贴完整的 LV1 / LV2 设备码。');return [...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('LiquidVivo/console/device/v1\n'+code)))].map(v=>v.toString(16).padStart(2,'0')).join('');}
 function shell(content,side=true){return `<div class="ambient" aria-hidden="true"><i></i><i></i></div>${side?`<aside class="sidebar"><a class="brand" href="#"><span class="brand-mark">L<span>V</span></span><span>LiquidVivo<small>CONTROL ROOM</small></span></a><div class="side-label">工作空间</div><nav>${Object.entries(names).map(([key,label])=>`<button class="nav ${section===key?'active':''}" data-section="${key}"><span>${icons[key]}</span>${label}${key==='devices'?`<small>${devices.length}</small>`:''}</button>`).join('')}</nav><div class="side-bottom"><span class="status-dot"></span>${admin?'管理员工作空间':'我的设备空间'}<p>${esc(session?.user.email)}</p><button class="text-button" id="logout">退出登录 ↗</button></div></aside>`:''}<main class="${side?'workspace':'auth-space'}">${content}</main>`;}
-function authPage(){workspaceReady=false;viewEpoch++;autoRefresh.stop();selected.clear();deviceQuery='';deviceFilter='all';listStates.clear();admin=false;root.innerHTML=shell(`<div class="auth-art"><a class="brand" href="#"><span class="brand-mark">L<span>V</span></span>LiquidVivo</a><div><span class="eyebrow">LESS NOISE. MORE CONTROL.</span><h1>每一份支持，<br>都有回应。</h1><p>你的设备、权益与消息，<br>在一个安静、有序的空间里。</p></div><div class="glass-orbit" aria-hidden="true"><div class="glass-pebble"></div><span>Liquid, in every detail.</span></div><small>LIQUIDVIVO / MEMBER & DEVICE CONSOLE</small></div><section class="auth-card glass"><span class="eyebrow">${recovery?'ACCOUNT RECOVERY':'WELCOME TO LIQUIDVIVO'}</span><h2>${recovery?'设置新密码':authMode==='signup'?'注册':authMode==='reset'?'找回密码':'登录'}</h2><p class="muted">${recovery?'为你的账号设置一个新的安全密码。':authMode==='signup'?'验证邮箱后，绑定系统中已有的设备。':authMode==='reset'?'我们会向你的邮箱发送重置链接。':'使用邮箱登录 LiquidVivo。'}</p><form id="auth-form">${recovery?'':`<label>邮箱<input name="email" type="email" autocomplete="username" placeholder="you@example.com" required maxlength="254"></label>`}${authMode==='reset'&&!recovery?'':`<label>密码<div class="password-field"><input id="password" name="password" type="password" autocomplete="${authMode==='signup'||recovery?'new-password':'current-password'}" minlength="12" maxlength="128" placeholder="至少 12 位，建议使用密码管理器" required><button type="button" id="show-password" aria-label="显示密码">◉</button></div></label>`}${authMode==='login'&&!recovery?`<div class="form-row"><label class="check"><input type="checkbox" name="remember" ${localStorage.getItem(storeKey)==='yes'?'checked':''}>在此设备自动登录</label><button class="text-button" type="button" data-auth="reset">忘记密码？</button></div>`:''}<p class="form-error" role="alert" id="auth-error"></p><button class="primary wide" type="submit">${recovery?'保存新密码':authMode==='signup'?'创建账号':authMode==='reset'?'发送重置邮件':'登录'} <span>↗</span></button></form><div class="auth-switch">${authMode==='login'?'还没有账号？':''}<button class="text-button" data-auth="${authMode==='login'?'signup':'login'}">${authMode==='login'?'创建账号':'返回登录'}</button></div><div class="fine-print">密码由身份服务处理，本站不保存明文密码。<br>普通账号须完成设备绑定才能查看设备权益。</div></section>`,false);
+function authPage(){workspaceReady=false;viewEpoch++;autoRefresh.stop();selected.clear();deviceQuery='';deviceFilter='all';listStates.clear();accounts=[];accountSelected.clear();accountReady=false;registrationPolicy=null;accountLoadToken++;admin=false;root.innerHTML=shell(`<div class="auth-art"><a class="brand" href="#"><span class="brand-mark">L<span>V</span></span>LiquidVivo</a><div><span class="eyebrow">LESS NOISE. MORE CONTROL.</span><h1>每一份支持，<br>都有回应。</h1><p>你的设备、权益与消息，<br>在一个安静、有序的空间里。</p></div><div class="glass-orbit" aria-hidden="true"><div class="glass-pebble"></div><span>Liquid, in every detail.</span></div><small>LIQUIDVIVO / MEMBER & DEVICE CONSOLE</small></div><section class="auth-card glass"><span class="eyebrow">${recovery?'ACCOUNT RECOVERY':'WELCOME TO LIQUIDVIVO'}</span><h2>${recovery?'设置新密码':authMode==='signup'?'注册':authMode==='reset'?'找回密码':'登录'}</h2><p class="muted">${recovery?'为你的账号设置一个新的安全密码。':authMode==='signup'?'验证邮箱后，绑定系统中已有的设备。':authMode==='reset'?'我们会向你的邮箱发送重置链接。':'使用邮箱登录 LiquidVivo。'}</p><form id="auth-form">${recovery?'':`<label>邮箱<input name="email" type="email" autocomplete="username" placeholder="you@example.com" required maxlength="254"></label>`}${authMode==='reset'&&!recovery?'':`<label>密码<div class="password-field"><input id="password" name="password" type="password" autocomplete="${authMode==='signup'||recovery?'new-password':'current-password'}" minlength="12" maxlength="128" placeholder="至少 12 位，建议使用密码管理器" required><button type="button" id="show-password" aria-label="显示密码">◉</button></div></label>`}${authMode==='login'&&!recovery?`<div class="form-row"><label class="check"><input type="checkbox" name="remember" ${localStorage.getItem(storeKey)==='yes'?'checked':''}>在此设备自动登录</label><button class="text-button" type="button" data-auth="reset">忘记密码？</button></div>`:''}<p class="form-error" role="alert" id="auth-error"></p><button class="primary wide" type="submit">${recovery?'保存新密码':authMode==='signup'?'创建账号':authMode==='reset'?'发送重置邮件':'登录'} <span>↗</span></button></form><div class="auth-switch">${authMode==='login'?'还没有账号？':''}<button class="text-button" data-auth="${authMode==='login'?'signup':'login'}">${authMode==='login'?'创建账号':'返回登录'}</button></div><div class="fine-print">密码由身份服务处理，本站不保存明文密码。<br>普通账号须完成设备绑定才能查看设备权益。</div></section>`,false);
  root.querySelectorAll('[data-auth]').forEach(b=>b.onclick=()=>{authMode=b.dataset.auth;authPage();});
  root.querySelector('#show-password')?.addEventListener('click',()=>{const input=root.querySelector('#password');input.type=input.type==='password'?'text':'password';});
  root.querySelector('#auth-form').onsubmit=async e=>{e.preventDefault();if(authBusy)return;authBusy=true;const b=e.submitter;b.disabled=true;const f=new FormData(e.target);try{
@@ -59,7 +62,7 @@ function authPage(){workspaceReady=false;viewEpoch++;autoRefresh.stop();selected
 }
 function dialog(title,body,onSubmit,button='保存'){viewEpoch++;document.querySelector('dialog')?.remove();const el=document.createElement('dialog');el.className='modal glass';el.innerHTML=`<form><header><h2>${esc(title)}</h2><button type="button" class="close" aria-label="关闭">×</button></header>${body}<p class="form-error" role="alert"></p><footer><button type="button" class="secondary cancel">取消</button><button class="primary" type="submit">${esc(button)}</button></footer></form>`;document.body.append(el);el.querySelectorAll('.close,.cancel').forEach(b=>b.onclick=()=>el.close());el.addEventListener('close',()=>el.remove());el.querySelector('form').onsubmit=async e=>{e.preventDefault();e.submitter.disabled=true;try{await onSubmit(new FormData(e.target));el.close();}catch(err){el.querySelector('.form-error').textContent=errorText(err);}finally{if(e.submitter.isConnected)e.submitter.disabled=false;}};el.showModal();return el;}
 function boot(){if(!bootFlight)bootFlight=bootOnce().finally(()=>{bootFlight=null;});return bootFlight;}
-async function bootOnce(){workspaceReady=false;viewEpoch++;autoRefresh.stop();try{const {data,error}=await api.auth.getSession();if(error)throw error;session=data.session;if(!session){authPage();return;}admin=await rpc('lv_is_admin');if(admin&&!await rpc('lv_admin_session_ready')){emailConfirmationPage();return;}await load();render();workspaceReady=true;autoRefresh.start();}catch(e){root.innerHTML=shell(`<section class="empty"><h2>暂时无法连接工作空间</h2><p>${esc(errorText(e))}</p><button class="primary" id="retry">重新连接</button><button class="secondary" id="logout">退出登录</button></section>`,false);document.querySelector('#retry').onclick=boot;document.querySelector('#logout').onclick=logout;}}
+async function bootOnce(){workspaceReady=false;viewEpoch++;autoRefresh.stop();try{const {data,error}=await api.auth.getSession();if(error)throw error;session=data.session;if(recovery){authPage();return;}if(!session){authPage();return;}if(!await rpc('lv_user_session_active')){await api.auth.signOut({scope:'local'});session=null;authPage();toast('会话已失效，请重新登录。');return;}admin=await rpc('lv_is_admin');if(admin&&!await rpc('lv_admin_session_ready')){emailConfirmationPage();return;}await load();if(recovery){authPage();return;}render();workspaceReady=true;autoRefresh.start();if(admin&&section==='users')void refreshAccounts();}catch(e){root.innerHTML=shell(`<section class="empty"><h2>暂时无法连接工作空间</h2><p>${esc(errorText(e))}</p><button class="primary" id="retry">重新连接</button><button class="secondary" id="logout">退出登录</button></section>`,false);document.querySelector('#retry').onclick=boot;document.querySelector('#logout').onclick=logout;}}
 function emailConfirmationPage(){
  workspaceReady=false;viewEpoch++;autoRefresh.stop();
  const email=session.user.email,userId=session.user.id;
@@ -100,9 +103,11 @@ async function refreshWorkspace(){
  // Revalidate server-side role/confirmation before applying another snapshot.
  const role=await api.rpc('lv_is_admin').abortSignal(signal);if(role.error)throw role.error;
  if(!canApply())return;
+ const active=await api.rpc('lv_user_session_active').abortSignal(signal);if(active.error)throw active.error;if(!canApply())return;if(active.data!==true){await boot();return;}
  if(role.data!==admin){await boot();return;}
  if(admin){const ready=await api.rpc('lv_admin_session_ready').abortSignal(signal);if(ready.error)throw ready.error;if(!canApply())return;if(!ready.data){emailConfirmationPage();return;}}
  if(!await load({canApply,signal}))return;
+ if(admin&&section==='users'){await refreshAccounts({quiet:true});return;}
  if(admin&&section==='devices'){
    // Keep search input, focus, sorting, page and cross-page selection in place.
    rows();
@@ -139,14 +144,71 @@ function listView(type){
   `<div class="content-grid">${list.map(x=>`<article class="content-card"><div class="card-top"><span class="badge neutral">${esc(({active:'进行中',scheduled:'未开始',expired:'已结束',stopped:'已停止'})[messageState(x)])}</span><small>全员限免</small></div><h2>${esc(x.title)}</h2><p>${esc(x.features.map(f=>f==='status_bar'?'状态栏定制':'通知上岛').join(' · '))}</p><div class="item-meta">${time(x.starts_at)}<br>至 ${time(x.ends_at)}</div>${admin&&x.enabled?`<button class="text-button danger-text" data-disable="${x.id}" data-type="campaign">停止活动</button>`:''}</article>`).join('')||'<section class="empty"><h2>没有匹配的活动</h2></section>'}</div>`;
 }
 
+async function refreshAccounts({append=false,quiet=false}={}){
+ const epoch=viewEpoch,user=session?.user.id,token=++accountLoadToken;
+ const valid=()=>token===accountLoadToken&&epoch===viewEpoch&&session?.user.id===user&&admin&&section==='users';
+ accountBusy=true;accountError='';if(!quiet&&valid())render();
+ try{
+   let next=append?accountCursor:null,result=append?[...accounts]:[],total=0;
+   const rounds=append?4:Math.min(80,Math.max(4,Math.ceil(accounts.length/250)));
+   for(let i=0;i<rounds;i++){
+     const r=await api.rpc('lv_admin_accounts',{p_after:next,p_include_anonymous:includeInstallations}).abortSignal(AbortSignal.timeout(20000));
+     if(r.error)throw r.error;if(!valid())return;
+     result.push(...r.data.items);total=r.data.total;next=r.data.next_cursor;if(!next)break;
+   }
+   const policy=await api.rpc('lv_admin_registration_policy');if(policy.error)throw policy.error;if(!valid())return;
+   accounts=[...new Map(result.map(u=>[u.id,u])).values()];accountTotal=total;accountCursor=next;registrationPolicy=policy.data;accountReady=true;
+   accountSelected=new Set([...accountSelected].filter(id=>accounts.some(u=>u.id===id&&!u.is_admin)));
+ }catch(e){if(valid()){accountError=['PGRST202','42883'].includes(e.code)?'账号管理接口尚未部署，请执行 009_account_management.sql。':errorText(e);accountReady=false;}}
+ finally{if(valid()){accountBusy=false;render();}}
+}
+function visibleAccounts(){return filtered(accounts,accountSearchFields,accountMatches);}
+function accountsView(){
+ return toolbar('账号管理','查看注册账号、密码设置状态和设备绑定；管理操作仅管理员可用。','<button class="secondary" id="registration-policy">注册防护</button>')+
+   listControls(accountFilters,'搜索账号、备注或设备码')+(accountError?`<div class="sync-notice">${esc(accountError)}</div>`:'')+
+   (accountBusy?'<p class="muted">正在更新账号列表…</p>':'')+
+   accountList({users:visibleAccounts(),selected:accountSelected,esc,time,includeAnonymous:includeInstallations,total:accountTotal,cursor:accountCursor,loaded:accounts.length});
+}
+async function accountOperation(action,target,data={}){
+ const {data:result,error}=await api.functions.invoke('cloud-sync',{body:{operation:'admin_accounts',action,target_id:target,request_id:crypto.randomUUID(),data}});
+ if(error){const details=await error.context?.json?.().catch(()=>null);throw Error(details?.partial?'认证服务可能已经更新，但状态确认失败。请刷新核实，不要连续重复提交。':details?.error==='administrator_confirmation_required'?'管理员确认已失效，请重新登录确认。':details?.error==='account_operation_rejected'?'操作被拒绝：管理员账号受保护，或目标正在处理，请刷新后重试。':'账号操作未完成，请刷新核实后重试。');}
+ if(!result?.ok)throw Error('账号操作未确认成功。');return result;
+}
+function bindAccountEvents(){
+ root.querySelector('#include-installations').onchange=e=>{includeInstallations=e.target.checked;accountSelected.clear();void refreshAccounts();};
+ root.querySelector('#load-more-accounts')?.addEventListener('click',()=>{if(!accountBusy)void refreshAccounts({append:true});});
+ root.querySelectorAll('[data-account-check]').forEach(b=>b.onchange=()=>{b.checked?accountSelected.add(b.dataset.accountCheck):accountSelected.delete(b.dataset.accountCheck);root.querySelector('#account-selection').textContent=`已选 ${accountSelected.size} 个账号`;});
+ root.querySelectorAll('[data-account-selection]').forEach(b=>b.onclick=()=>{if(b.dataset.accountSelection==='none')accountSelected.clear();else visibleAccounts().filter(u=>!u.is_admin).forEach(u=>accountSelected.add(u.id));render();});
+ root.querySelectorAll('[data-account-copy]').forEach(b=>b.onclick=async()=>{const u=accounts.find(u=>u.id===b.dataset.accountCopy),d=u?.devices.find(d=>d.id===b.dataset.codeDevice);if(d?.device_code)try{await navigator.clipboard.writeText(d.device_code);toast('设备码已复制。');}catch{toast('复制失败，可展开设备信息手动复制。');}});
+ root.querySelectorAll('[data-account-manage]').forEach(b=>b.onclick=()=>{
+   const user=accounts.find(u=>u.id===b.dataset.accountManage);if(!user||user.is_admin)return;
+   const el=dialog('管理账号',accountForm(user,devices,esc),async f=>{
+     const action=f.get('action'),result=await accountOperation(action,user.id,accountActionData(f));
+     await load();await refreshAccounts();toast(result.mail_sent===false?'账号已更新，但邮件发送未确认，请核实后单独发送找回邮件。':'账号操作已完成。');
+   },'确认操作');
+   const action=el.querySelector('[name="action"]');const fields=()=>el.querySelectorAll('[data-account-fields]').forEach(f=>{f.hidden=f.dataset.accountFields!==action.value;f.disabled=f.hidden;});action.onchange=fields;fields();
+ });
+ root.querySelectorAll('[data-account-batch]').forEach(b=>b.onclick=()=>{
+   const ids=[...accountSelected].filter(id=>accounts.some(u=>u.id===id&&!u.is_admin));if(!ids.length){toast('请先选择非管理员账号。');return;}if(ids.length>50){toast('每次最多处理 50 个账号，请缩小筛选范围。');return;}
+   const action=b.dataset.accountBatch;
+   dialog(accountActions[action],`<p>将对明确勾选的 ${ids.length} 个非管理员账号执行操作。不会封禁设备或撤销永久授权。</p>`,async()=>{
+     let ok=0;const failed=[];for(const id of ids)try{await accountOperation(action,id);ok++;accountSelected.delete(id);}catch{failed.push(id);}
+     await load();await refreshAccounts();toast(`已完成 ${ok} 个，未完成 ${failed.length} 个。${failed.length?'未完成的账号保留勾选，请核实状态。':''}`);
+   },'确认批量操作');
+ });
+ root.querySelector('#registration-policy').onclick=()=>{
+   if(!registrationPolicy){toast('注册设置尚未加载完成。');return;}const p=registrationPolicy;
+   dialog('网页注册防护',`<label class="check"><input name="registration_open" type="checkbox" ${p.registration_open?'checked':''}>允许新的网页账号注册</label><label>一小时内最多注册<input name="hourly_limit" type="number" min="1" max="1000" value="${p.hourly_limit}" required></label><label>24 小时内最多注册<input name="daily_limit" type="number" min="1" max="10000" value="${p.daily_limit}" required></label><p>限制在服务器执行，不依赖网页按钮。只针对网页注册账号，不关闭已有账号登录，也不阻止手机匿名安装会话。此项不替代认证服务的 IP 限流或验证码。</p>`,async f=>{await rpc('lv_admin_registration_policy',{p_settings:{registration_open:f.has('registration_open'),hourly_limit:Number(f.get('hourly_limit')),daily_limit:Number(f.get('daily_limit'))}});await refreshAccounts();toast('注册防护设置已保存。');});
+ };
+}
 function accountView(){return toolbar('账号设置','管理登录与账号安全。')+`<section class="panel account-panel"><h2>登录身份</h2><dl><dt>邮箱</dt><dd>${esc(session.user.email)}</dd><dt>权限</dt><dd>${admin?'管理员 · 已完成邮箱确认':'普通用户'}</dd><dt>本机自动登录</dt><dd>${localStorage.getItem(storeKey)==='yes'?'已开启':'未开启'}</dd></dl><button class="secondary" id="recheck-role">重新验证权限</button><button class="secondary" id="change-password">修改密码</button><button class="secondary" id="logout-all">退出所有会话</button></section>`;}
 function auditView(){return toolbar('操作记录','关键变更留痕，方便核对与追溯。')+listControls({all:'全部记录'},'搜索操作、时间或账号')+`<section class="panel"><table><thead><tr><th>时间</th><th>操作</th><th>影响数量</th><th>操作账号 ID</th></tr></thead><tbody>${filtered(audit,x=>[x.action,x.actor,time(x.created_at),({grant:'授权 赞助',revoke:'撤销',block:'拉黑',unblock:'解除限制',unbind:'解绑'})[x.action]||'']).map(x=>`<tr><td>${time(x.created_at)}</td><td>${esc(x.action)}</td><td>${x.target_count}</td><td class="mono">${esc(x.actor)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty-cell">暂无操作记录</td></tr>'}</tbody></table></section>`;}
-function render(){if(!admin&&!['devices','messages','sponsor','feedback','account'].includes(section))section='devices';const supportContent=section==='sponsor'?sponsorView({admin,devices,orders:filtered(sponsorOrders,o=>[o.transaction_ref,o.response,o.provider,devices.find(d=>d.id===o.device_id)?.label,devices.find(d=>d.id===o.device_id)?.note],(o,f)=>f==='all'||o.status===f),time,esc,ready:sponsorReady}):section==='feedback'?feedbackView({admin,items:filtered(feedbackItems,f=>[f.title,f.body,f.reply],(x,f)=>f==='all'||x.status===f),time,esc,ready:sponsorReady,hasDevice:devices.some(d=>!d.blocked)}):null;const memberContent=!admin?(supportContent??(section==='devices'?memberDevices({devices,entitlements,campaigns,time,esc}):section==='messages'?memberMessages({messages:filtered(messages,m=>[m.title,m.body,messageKinds[m.kind]],(m,f)=>f==='all'||m.kind===f),time,esc}):accountView())):'';root.innerHTML=admin?shell(supportContent??(section==='devices'?deviceView():section==='account'?accountView():section==='audit'?auditView():listView(section))):memberShell({content:memberContent,email:session.user.email,section,esc});root.querySelectorAll('[data-section]').forEach(b=>b.onclick=()=>{viewEpoch++;section=b.dataset.section;render();});document.querySelector('#logout').onclick=logout;document.querySelector('#refresh').onclick=async e=>{e.target.disabled=true;await boot();};
+function render(){if(!admin&&!['devices','messages','sponsor','feedback','account'].includes(section))section='devices';const supportContent=section==='sponsor'?sponsorView({admin,devices,orders:filtered(sponsorOrders,o=>[o.transaction_ref,o.response,o.provider,devices.find(d=>d.id===o.device_id)?.label,devices.find(d=>d.id===o.device_id)?.note],(o,f)=>f==='all'||o.status===f),time,esc,ready:sponsorReady}):section==='feedback'?feedbackView({admin,items:filtered(feedbackItems,f=>[f.title,f.body,f.reply],(x,f)=>f==='all'||x.status===f),time,esc,ready:sponsorReady,hasDevice:devices.some(d=>!d.blocked)}):null;const memberContent=!admin?(supportContent??(section==='devices'?memberDevices({devices,entitlements,campaigns,time,esc}):section==='messages'?memberMessages({messages:filtered(messages,m=>[m.title,m.body,messageKinds[m.kind]],(m,f)=>f==='all'||m.kind===f),time,esc}):accountView())):'';root.innerHTML=admin?shell(supportContent??(section==='devices'?deviceView():section==='account'?accountView():section==='users'?accountsView():section==='audit'?auditView():listView(section))):memberShell({content:memberContent,email:session.user.email,section,esc});root.querySelectorAll('[data-section]').forEach(b=>b.onclick=()=>{viewEpoch++;section=b.dataset.section;render();if(admin&&section==='users')void refreshAccounts();});document.querySelector('#logout').onclick=logout;document.querySelector('#refresh').onclick=async e=>{e.target.disabled=true;await boot();};
  if(['sponsor','feedback'].includes(section)||(!admin&&section==='messages')){
    const opts=section==='sponsor'?{all:'全部赞助记录',pending:'待核对',approved:'已确认',rejected:'未通过'}:section==='feedback'?{all:'全部反馈',open:'待回复',replied:'已回复',closed:'已结束'}:{all:'全部消息',...messageKinds};
    const top=root.querySelector('.topbar');if(top)top.insertAdjacentHTML('afterend',listControls(opts,section==='sponsor'?'搜索订单或设备':section==='feedback'?'搜索反馈':'搜索消息'));
  }
- bindListControls();bindMessageManagement();
+ bindListControls();bindMessageManagement();if(admin&&section==='users')bindAccountEvents();
  // Cloud management is usable independently; never imply that old APKs consume these rows.
  const notice=document.createElement('div');notice.className='sync-notice';notice.textContent='云端规则在已接入的新版 App 中约每小时同步一次；休眠可能延迟。可在 App 赞助中心立即同步，旧版 APK 不会自动接入。';if(admin)document.querySelector('.topbar').after(notice);
  if(section==='devices')bindDeviceEvents();

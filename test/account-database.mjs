@@ -1,0 +1,85 @@
+// Local PostgreSQL engine check. This fixture models Auth's consumed columns;
+// it does not call hosted Auth, send mail, or claim production end-to-end coverage.
+// node test/account-database.mjs <absolute path to pinned PGlite dist/index.js>
+import {readFile} from 'node:fs/promises';
+import {pathToFileURL} from 'node:url';
+import assert from 'node:assert/strict';
+const {PGlite}=await import(pathToFileURL(process.argv[2]).href);
+const {pgcrypto}=await import(pathToFileURL(process.argv[2].replace(/index\.js$/,'contrib/pgcrypto.js')).href);
+const db=new PGlite({extensions:{pgcrypto}});
+const admin='00000000-0000-4000-8000-000000000001',member='00000000-0000-4000-8000-000000000002',anon='00000000-0000-4000-8000-000000000003';
+const sid='10000000-0000-4000-8000-000000000001',msid='10000000-0000-4000-8000-000000000002';
+await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
+ create schema auth;create schema extensions;
+ create table auth.users(id uuid primary key,email text,created_at timestamptz default now(),last_sign_in_at timestamptz,email_confirmed_at timestamptz,is_anonymous boolean default false,banned_until timestamptz,encrypted_password text);
+ create table auth.sessions(id uuid primary key,user_id uuid references auth.users(id),created_at timestamptz default now());
+ create function auth.jwt() returns jsonb language sql stable as $$select coalesce(nullif(current_setting('request.jwt.claims',true),''),'{}')::jsonb$$;
+ create function auth.uid() returns uuid language sql stable as $$select (auth.jwt()->>'sub')::uuid$$;
+ grant usage on schema auth,public,extensions to authenticated,anon,service_role;
+ grant execute on all functions in schema auth to authenticated,anon,service_role;`);
+for(const file of ['001_console.sql','003_admin_email.sql','004_sponsorship.sql','005_app_connection.sql','006_silent_resume.sql','009_account_management.sql']){
+ await db.exec(await readFile(new URL('../supabase/'+file,import.meta.url),'utf8'));
+}
+// Repeat migration to catch lost checks, duplicate policy and signature failures.
+await db.exec(await readFile(new URL('../supabase/009_account_management.sql',import.meta.url),'utf8'));
+await db.exec(`insert into auth.users(id,email,email_confirmed_at,encrypted_password) values('${admin}','admin@example.test',now(),'fixture-hash'),('${member}','member@example.test',now(),'fixture-hash');
+ insert into auth.users(id,is_anonymous) values('${anon}',true);
+ insert into auth.sessions(id,user_id,created_at) values('${sid}','${admin}',now()-interval '1 minute'),('${msid}','${member}',now()-interval '1 minute');
+ insert into public.lv_admins(user_id) values('${admin}');
+ insert into private.lv_admin_email_sessions values('${sid}','${admin}',now()+interval '1 hour');`);
+const claims=async(uid,session)=>db.query(`select set_config('request.jwt.claims',$1,false)`,[JSON.stringify({sub:uid,session_id:session,role:'authenticated'})]);
+const value=async(sql,args=[])=>(await db.query(sql,args)).rows[0].value;
+await claims(admin,sid);
+assert.equal(await value('select public.lv_admin_session_ready() as value'),true);
+const users=await value('select public.lv_admin_accounts() as value');assert.equal(users.total,2);assert.equal(users.anonymous_count,1);
+assert.equal(JSON.stringify(users).includes('fixture-hash'),false);assert.equal(users.items.every(x=>typeof x.password_set==='boolean'),true);
+await db.exec('set role authenticated');assert.equal(await value('select public.lv_admin_session_ready() as value'),true);await db.exec('reset role');
+await claims(member,msid);
+await db.exec('set role authenticated');await assert.rejects(db.query('select public.lv_admin_accounts()'),/管理员/);
+await assert.rejects(db.query('select public.lv_admin_account_finish(gen_random_uuid(),true)'),/permission denied/);await db.exec('reset role');
+await claims(admin,sid);
+await assert.rejects(db.query('select public.lv_admin_account_begin($1,$2,gen_random_uuid())',['block',admin]),/管理员账号/);
+const request='20000000-0000-4000-8000-000000000001';
+assert.equal((await value('select public.lv_admin_account_begin($1,$2,$3) as value',['logout',member,request])).status,'started');
+assert.equal((await value('select public.lv_admin_account_begin($1,$2,$3) as value',['logout',member,request])).status,'pending');
+await db.exec('set role service_role');assert.equal(await value('select public.lv_admin_account_finish($1,true) as value',[request]),true);await db.exec('reset role');
+assert.equal((await value('select public.lv_admin_account_begin($1,$2,$3) as value',['logout',member,request])).status,'completed');
+await claims(member,msid);assert.equal(await value('select public.lv_user_session_active() as value'),false);
+await db.exec('set role authenticated');assert.equal((await db.query('select * from public.lv_devices')).rows.length,0);
+await assert.rejects(db.query("select public.lv_submit_feedback('test','body')"),/请重新登录/);await db.exec('reset role');
+await claims(admin,sid);
+// Account binding requires a real short-lived one-time token and cannot steal.
+const did='30000000-0000-4000-8000-000000000001',token='a'.repeat(32),bind='20000000-0000-4000-8000-000000000002';
+await db.query(`insert into public.lv_devices(id,device_hash) values($1,repeat('b',64))`,[did]);
+await db.query(`insert into public.lv_pairings values($1,extensions.digest($2,'sha256'),now()+interval '15 minutes',null)`,[did,token]);
+await value('select public.lv_admin_account_begin($1,$2,$3) as value',['bind',member,bind]);
+await assert.rejects(db.query('select public.lv_admin_account_finish($1,true,$2)',[bind,JSON.stringify({device_id:did,pairing_token:'b'.repeat(32)})]),/配对凭证无效/);
+assert.equal(await value('select owner_id as value from public.lv_devices where id=$1',[did]),null);
+assert.equal(await value('select public.lv_admin_account_finish($1,true,$2) as value',[bind,JSON.stringify({device_id:did,pairing_token:token})]),true);
+assert.equal(await value('select owner_id as value from public.lv_devices where id=$1',[did]),member);
+assert.equal(await value('select consumed_at is not null as value from public.lv_pairings where device_id=$1',[did]),true);
+const listed=await value('select public.lv_admin_accounts() as value');assert.equal(listed.items.find(u=>u.id===member).devices.length,1);
+await claims(member,msid);await db.exec('set role authenticated');
+assert.equal((await db.query('select * from public.lv_devices')).rows.length,0);
+await assert.rejects(db.query("select public.lv_bind_device(repeat('b',64),repeat('a',32))"),/请重新登录/);
+await assert.rejects(db.query("select public.lv_submit_sponsorship(gen_random_uuid(),$1,'wechat','test',1500)",[did]),/请重新登录/);
+await db.exec('reset role');
+const fresh='10000000-0000-4000-8000-000000000004';
+await db.query("insert into auth.sessions(id,user_id,created_at) values($1,$2,now()+interval '1 second')",[fresh,member]);
+await claims(member,fresh);await db.exec('set role authenticated');
+assert.equal((await db.query('select id from public.lv_devices')).rows.length,1);await db.exec('reset role');
+await claims(admin,sid);
+const block='20000000-0000-4000-8000-000000000003';
+await value('select public.lv_admin_account_begin($1,$2,$3) as value',['block',member,block]);
+await value('select public.lv_admin_account_finish($1,true) as value',[block]);
+await claims(member,fresh);assert.equal(await value('select public.lv_user_session_active() as value'),false);await claims(admin,sid);
+// Pause registered signups without stopping installation sessions or existing login.
+await value('select public.lv_admin_registration_policy($1) as value',[JSON.stringify({registration_open:false,hourly_limit:30,daily_limit:100})]);
+await assert.rejects(db.query("insert into auth.users(id,email) values(gen_random_uuid(),'new@example.test')"),/注册暂未开放/);
+await assert.rejects(db.query('update auth.users set is_anonymous=false where id=$1',[anon]),/注册暂未开放/);
+await db.exec("insert into auth.users(id,is_anonymous) values(gen_random_uuid(),true)");
+assert.equal(await value('select public.lv_admin_session_ready() as value'),true);
+await value('select public.lv_admin_registration_policy($1) as value',[JSON.stringify({registration_open:true,hourly_limit:1,daily_limit:100})]);
+await assert.rejects(db.query("insert into auth.users(id,email) values(gen_random_uuid(),'rate@example.test')"),/过于频繁/);
+await db.close();
+console.log('PASS: real migration and reapply, role privileges, administrator protection, idempotency, old-session denial, security-definer guard, pairing consumption and registration limits (local PostgreSQL engine; hosted Auth not exercised).');

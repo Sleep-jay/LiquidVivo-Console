@@ -50,3 +50,5 @@ tr.selected{background:#f5f5f5}.binding-callout{border-color:#bbb}
 @media(prefers-color-scheme:dark){:root{color-scheme:dark}}
 
 .list-tools{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px 20px;margin-bottom:22px}.list-tools select{width:auto;max-width:230px}.list-tools .search{width:min(650px,75%)}.content-actions{display:flex;gap:18px;flex-wrap:wrap}.audience-tools{line-height:1.8}@media(max-width:760px){.list-tools{align-items:stretch;flex-direction:column}.list-tools .search{width:100%}.list-tools select{max-width:none;width:100%}}
+
+.sidebar nav{flex:1;min-height:0;overflow-y:auto}.side-bottom{flex-shrink:0}.account-hint{padding:0 22px;font-size:12px;color:var(--muted);line-height:1.8}.account-device{max-width:320px;overflow-wrap:anywhere;margin:6px 0}.account-device summary{cursor:pointer}.modal fieldset[data-account-fields]{display:block;margin:12px 0}.modal fieldset[data-account-fields][hidden]{display:none}.account-list td{vertical-align:top}

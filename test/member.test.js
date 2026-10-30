@@ -7,7 +7,7 @@ test('member navigation excludes administrative sections',()=>{
  const html=memberShell({content:'content',email:'member@example.com',section:'devices',esc});
  assert.match(html,/用户中心/);
  for(const key of ['devices','messages','account'])assert.match(html,new RegExp(`data-section="${key}"`));
- for(const text of ['data-section="campaigns"','data-section="audit"','工作空间','全站统计'])assert.ok(!html.includes(text));
+ for(const text of ['data-section="campaigns"','data-section="audit"','data-section="users"','账号管理','工作空间','全站统计'])assert.ok(!html.includes(text));
 });
 test('unbound member gets pairing entry without inventory or bulk controls',()=>{
  const html=memberDevices({...base,devices:[],entitlements:[],campaigns:[]});
