@@ -1,5 +1,17 @@
 # LiquidVivo 管理网页
 
+## 最新：管理员改用邮箱确认（覆盖下文历史 TOTP 设置）
+
+用户于 2026-10-30 要求不使用身份验证器。现版本管理员先密码登录，再点击发送邮箱验证码，在同一网页填写邮件中的数字码。自动登录保留会话，但服务器管理员确认最长 12 小时。过期或重新开始确认时，需要最近 5 分钟内的密码登录。
+
+已有项目只执行新的 `supabase/003_admin_email.sql`，不要重新运行 001/002。该脚本事务式替换管理员条件与 RLS，不删除用户、设备、授权或验证器记录。全新项目依次执行 001、注册并确认所有者、002、003。
+
+Supabase Authentication 的 Emails / Email Templates → Magic Link，将邮件正文替换为 `supabase/admin-email-template.html`，保存。关键是使用 `{{ .Token }}`，否则平台默认发链接，网页不会收到可供用户填写的验证码。默认发信配额和是否需要自定义 SMTP 仍由平台规则决定。
+
+服务端 begin_email 检查管理员白名单与最近 password AMR，再生成 256 位随机挑战（仅保存摘要，15 分钟有效，60 秒节流）；邮箱 OTP 由 Supabase Auth 验证，complete_email 检查同一账号、近期 OTP AMR、一次性挑战后，将授权绑定到验证成功后的 session_id。前端 sessionStorage 仅保存这次挑战，不存验证码或明文密码。只凭普通 OTP 登录不能绕过前置密码步骤直接获取管理员会话。所有管理 RPC 继续通过 private.require_admin，所有管理读取策略统一通过 lv_admin_session_ready。
+
+本次前端与协议调用夹具测试通过、SQL 解析通过，不代表已在用户 Supabase 项目执行迁移、配置模板或完成真实邮箱验证。部署配置仍需项目所有者在控制台完成。
+
 GitHub Pages 静态网页 + Supabase Auth / PostgreSQL。中性黑白灰、浅深色模式；无第三方字体请求，不使用大面积磨砂背景。
 
 ## 当前完成范围
