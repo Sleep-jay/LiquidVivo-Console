@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 import {createAutoRefresh} from '../src/auto-refresh.js';
 import {authFlowType} from '../src/recovery.js';
+import {campaignGrants} from '../src/campaigns.js';
 
 // Exercise the actual load/refresh functions with controlled transport and DOM.
 function workspace({errorTable,waitForExtra}={}){
@@ -17,7 +18,7 @@ function workspace({errorTable,waitForExtra}={}){
       then:(resolve,reject)=>(name==='lv_feedback'&&waitForExtra?waitForExtra:Promise.resolve()).then(result).then(resolve,reject)};
     return q;
   }
-  const context=vm.createContext({createAutoRefresh,authFlowType,createClient:()=>api,config:{},gatewayFetch(){},
+  const context=vm.createContext({createAutoRefresh,authFlowType,campaignGrants,createClient:()=>api,config:{},gatewayFetch(){},
     createEmailConfirmation:()=>({}),sessionStorage:{},localStorage:{},AbortSignal,
     setTimeout,clearTimeout,document:{querySelector:()=>null,activeElement:null},window:{},
   });

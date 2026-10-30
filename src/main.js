@@ -6,6 +6,7 @@ import {deviceFilterOptions,matchesDeviceFilter,deviceSearchFields} from './devi
 import {messageKinds,messageStates,messageState,messageCards,messagePayload} from './message-management.js';
 import {accountFilters,accountMatches,accountSearchFields,accountList,accountActions,accountForm,accountActionData} from './accounts.js';
 import {authFlowType} from './recovery.js';
+import {campaignGrants,codeFields,codePayload,campaignCodesView,campaignCodeState} from './campaigns.js';
 import { createClient } from '@supabase/supabase-js';
 import { config } from './config.js';
 import { gatewayFetch } from './gateway-fetch.js';
@@ -30,6 +31,7 @@ const api = createClient(config.url, config.publishableKey, {global:{fetch:gatew
 let session, admin=false, section='devices', devices=[], entitlements=[], messages=[], campaigns=[], audit=[], selected=new Set(), sort='created_at', direction=-1;
 let authMode='login', authBusy=false, recovery=false;
 let sponsorOrders=[],feedbackItems=[],sponsorReady=false,messageReady=false;
+let campaignClaims=[],campaignCodes=[],campaignReady=false;
 let accounts=[],accountSelected=new Set(),accountCursor=null,accountTotal=0,accountReady=false,accountBusy=false,accountError='',includeInstallations=false,accountLoadToken=0,registrationPolicy=null;
 let deviceQuery='',deviceFilter='all';
 const listStates=new Map();
@@ -83,9 +85,14 @@ async function load({canApply=()=>true,signal}={}){
  if(admin){const r=await request(api.rpc('lv_admin_message_management_ready'));if(r.error&&!['PGRST202','42883'].includes(r.error.code))throw r.error;ready=r.data===true&&!r.error;}
  const extra=await Promise.all(['lv_sponsor_orders','lv_feedback'].map(table=>request(api.from(table).select('*').order('created_at',{ascending:false}).limit(1000))));
  for(const result of extra)if(result.error&&!['PGRST205','42P01'].includes(result.error.code))throw result.error;
+ const campaignData=await Promise.all(['lv_campaign_claims',...(admin?['lv_campaign_codes']:[])].map(table=>request(api.from(table).select('*').order('created_at',{ascending:false}).limit(1000))));
+ for(const r of campaignData)if(r.error&&!['PGRST205','42P01'].includes(r.error.code))throw r.error;
  // Commit a complete snapshot only while the initiating view/session is still current.
  if(!canApply())return false;
  [devices,entitlements,messages,campaigns,audit]=lists.map(r=>r.data);audit ||= [];
+ campaignReady=campaignData.every(r=>!r.error);campaignClaims=campaignData[0]?.data||[];campaignCodes=campaignData[1]?.data||[];
+ entitlements.push(...campaignGrants(campaigns,campaignClaims));
+ devices=devices.map(d=>({...d,campaign_titles:entitlements.filter(g=>g.device_id===d.id&&g.campaign_id).map(g=>g.campaign_title)}));
  selected=new Set([...selected].filter(id=>devices.some(d=>d.id===id)));
  messageReady=ready;
  sponsorReady=extra.every(r=>!r.error);[sponsorOrders,feedbackItems]=extra.map(r=>r.data||[]);
@@ -124,7 +131,7 @@ function activeGrants(d){return entitlements.filter(e=>e.device_id===d.id&&!e.re
 function status(d){if(d.blocked)return ['danger','已拉黑'];const grants=activeGrants(d);if(grants.some(e=>!e.ends_at))return ['green','永久权益'];if(grants.length)return ['blue','限时权益'];return ['neutral','无云端权益'];}
 function badge(d){const [style,text]=status(d);return `<span class="badge ${style}">${text}</span>`;}
 function toolbar(title,desc,action=''){return `<header class="topbar"><div><span class="eyebrow">LIQUIDVIVO / ${admin?'CONTROL ROOM':'MEMBER SPACE'}</span><h1>${title}</h1><p>${desc}</p></div><div class="top-actions"><button id="refresh" class="secondary">↻ 刷新</button>${action}</div></header>`;}
-function deviceView(){const all=admin?`<button class="primary" id="add-device">＋ 登记已有设备</button>`:'';return toolbar(admin?'设备与权益':'我的设备',admin?'查看设备、账号绑定与云端权益。':'查看已绑定设备与云端权益。',all)+`<div class="stats"><article><span>已登记设备</span><strong>${devices.length}<small>台</small></strong><p>当前可访问的设备记录</p></article><article><span>有效云端权益</span><strong>${devices.filter(d=>activeGrants(d).length).length}<small>台</small></strong><p>离线激活码不会自动出现在这里</p></article><article><span>设备限制</span><strong>${devices.filter(d=>d.blocked).length}<small>台</small></strong><p>与授权撤销分开管理</p></article></div><section class="panel"><div class="table-tools"><label class="search"><span>⌕</span><input id="search" value="${esc(deviceQuery)}" placeholder="搜索设备、备注或标识摘要" aria-label="搜索设备"></label><select id="filter" aria-label="筛选设备">${deviceFilterOptions(deviceFilter)}</select></div>${admin?`<div class="selection-bar"><span id="selection-count">已选择 ${selected.size} 台</span><button data-select="all">全选筛选结果</button><button data-select="only">仅选择筛选结果</button><button data-select="invert">反选</button><button data-select="none">清空</button><div></div><button id="batch-grant">设置权益</button><button id="batch-note">备注</button><button id="batch-message">发消息</button><button id="batch-more">更多操作 ↓</button></div>`:''}<div data-device-pager></div><div class="table-scroll"><table><thead><tr>${admin?'<th><input id="select-page" type="checkbox" aria-label="选择当前页设备"></th>':''}<th><button data-sort="label">设备 ↕</button></th><th>权益</th><th>账号绑定</th><th><button data-sort="last_seen">最近联系 ↕</button></th><th>备注</th></tr></thead><tbody id="device-rows"></tbody></table></div><div data-device-pager></div><div class="table-foot">表头勾选仅选择当前页；全选筛选结果与反选覆盖所有分页。最多载入 1,000 条。</div></section>${!admin&&!devices.length?`<section class="binding-callout"><h2>绑定你的设备</h2><p>使用系统中已登记的设备码和一次性配对凭证完成绑定。</p><button class="primary" id="bind-device">绑定已有设备 ↗</button></section>`:''}`;}
+function deviceView(){const all=admin?`<button class="primary" id="add-device">＋ 登记已有设备</button>`:'';return toolbar(admin?'设备与权益':'我的设备',admin?'查看设备、账号绑定与云端权益。':'查看已绑定设备与云端权益。',all)+`<div class="stats"><article><span>已登记设备</span><strong>${devices.length}<small>台</small></strong><p>当前可访问的设备记录</p></article><article><span>有效云端权益</span><strong>${devices.filter(d=>activeGrants(d).length).length}<small>台</small></strong><p>离线激活码不会自动出现在这里</p></article><article><span>设备限制</span><strong>${devices.filter(d=>d.blocked).length}<small>台</small></strong><p>与授权撤销分开管理</p></article></div><section class="panel"><div class="table-tools"><label class="search"><span>⌕</span><input id="search" value="${esc(deviceQuery)}" placeholder="搜索设备、备注或标识摘要" aria-label="搜索设备"></label><select id="filter" aria-label="筛选设备">${deviceFilterOptions(deviceFilter)}</select></div>${admin?`<div class="selection-bar"><span id="selection-count">已选择 ${selected.size} 台</span><button data-select="all">全选筛选结果</button><button data-select="only">仅选择筛选结果</button><button data-select="invert">反选</button><button data-select="none">清空</button><div></div><button id="batch-grant">设置权益</button><button id="batch-note">备注</button><button id="batch-message">发消息</button><button id="batch-campaign">限免活动管理</button><button id="batch-more">更多操作 ↓</button></div>`:''}<div data-device-pager></div><div class="table-scroll"><table><thead><tr>${admin?'<th><input id="select-page" type="checkbox" aria-label="选择当前页设备"></th>':''}<th><button data-sort="label">设备 ↕</button></th><th>权益</th><th>账号绑定</th><th><button data-sort="last_seen">最近联系 ↕</button></th><th>备注</th><th>操作</th></tr></thead><tbody id="device-rows"></tbody></table></div><div data-device-pager></div><div class="table-foot">表头勾选仅选择当前页；全选筛选结果与反选覆盖所有分页。最多载入 1,000 条。</div></section>${!admin&&!devices.length?`<section class="binding-callout"><h2>绑定你的设备</h2><p>使用系统中已登记的设备码和一次性配对凭证完成绑定。</p><button class="primary" id="bind-device">绑定已有设备 ↗</button></section>`:''}`;}
 function listControls(options={all:'全部'},label='搜索内容'){
  const state=listState();return `<section class="panel list-tools"><label class="search"><span>⌕</span><input id="list-search" value="${esc(state.query)}" placeholder="${esc(label)} · 支持拼音、近音和模糊匹配" aria-label="${esc(label)}"></label><select id="list-filter" aria-label="列表分类">${Object.entries(options).map(([key,title])=>`<option value="${key}" ${state.filter===key?'selected':''}>${esc(title)}</option>`).join('')}</select></section>`;
 }
@@ -141,7 +148,8 @@ function listView(type){
  const list=filtered(campaigns,x=>[x.title,...x.features],(x,f)=>f==='all'||messageState(x)===f);
  return toolbar('限免活动','设置指定功能的免费开放时间。',admin?'<button class="primary" id="new-item">＋ 创建活动</button>':'')+
   listControls({all:'全部活动',active:'进行中',scheduled:'未开始',expired:'已结束',stopped:'已停止'},'搜索限免活动')+
-  `<div class="content-grid">${list.map(x=>`<article class="content-card"><div class="card-top"><span class="badge neutral">${esc(({active:'进行中',scheduled:'未开始',expired:'已结束',stopped:'已停止'})[messageState(x)])}</span><small>全员限免</small></div><h2>${esc(x.title)}</h2><p>${esc(x.features.map(f=>f==='status_bar'?'状态栏定制':'通知上岛').join(' · '))}</p><div class="item-meta">${time(x.starts_at)}<br>至 ${time(x.ends_at)}</div>${admin&&x.enabled?`<button class="text-button danger-text" data-disable="${x.id}" data-type="campaign">停止活动</button>`:''}</article>`).join('')||'<section class="empty"><h2>没有匹配的活动</h2></section>'}</div>`;
+  (!campaignReady?'<p class="sync-notice">兑换功能尚未部署，请完成 010_campaign_redemption.sql。</p>':'')+
+  `<div class="content-grid">${list.map(x=>`<article class="content-card"><div class="card-top"><span class="badge neutral">${esc(({active:'进行中',scheduled:'未开始',expired:'已结束',stopped:'已停止'})[messageState(x)])}</span><small>凭兑换码领取</small></div><h2>${esc(x.title)}</h2><p>${esc(x.features.map(f=>f==='status_bar'?'状态栏定制':'通知上岛').join(' · '))}</p><div class="item-meta">${time(x.starts_at)}<br>至 ${time(x.ends_at)}<br>已领取 ${campaignClaims.filter(m=>m.campaign_id===x.id).length} 台设备</div><div class="content-actions"><button class="text-button" data-campaign-edit="${x.id}">编辑活动 / 状态</button><button class="text-button" data-campaign-codes="${x.id}">管理兑换码</button><button class="text-button" data-campaign-members="${x.id}">管理活动用户</button></div></article>`).join('')||'<section class="empty"><h2>没有匹配的活动</h2></section>'}</div>`;
 }
 
 async function refreshAccounts({append=false,quiet=false}={}){
@@ -157,7 +165,7 @@ async function refreshAccounts({append=false,quiet=false}={}){
      result.push(...r.data.items);total=r.data.total;next=r.data.next_cursor;if(!next)break;
    }
    const policy=await api.rpc('lv_admin_registration_policy');if(policy.error)throw policy.error;if(!valid())return;
-   accounts=[...new Map(result.map(u=>[u.id,u])).values()];accountTotal=total;accountCursor=next;registrationPolicy=policy.data;accountReady=true;
+   accounts=[...new Map(result.map(u=>[u.id,{...u,devices:u.devices.map(d=>({...d,campaign_titles:activeGrants(d).filter(g=>g.campaign_id).map(g=>g.campaign_title)}))}])).values()];accountTotal=total;accountCursor=next;registrationPolicy=policy.data;accountReady=true;
    accountSelected=new Set([...accountSelected].filter(id=>accounts.some(u=>u.id===id&&!u.is_admin)));
  }catch(e){if(valid()){accountError=['PGRST202','42883'].includes(e.code)?'账号管理接口尚未部署，请执行 009_account_management.sql。':errorText(e);accountReady=false;}}
  finally{if(valid()){accountBusy=false;render();}}
@@ -208,7 +216,7 @@ function render(){if(!admin&&!['devices','messages','sponsor','feedback','accoun
    const opts=section==='sponsor'?{all:'全部赞助记录',pending:'待核对',approved:'已确认',rejected:'未通过'}:section==='feedback'?{all:'全部反馈',open:'待回复',replied:'已回复',closed:'已结束'}:{all:'全部消息',...messageKinds};
    const top=root.querySelector('.topbar');if(top)top.insertAdjacentHTML('afterend',listControls(opts,section==='sponsor'?'搜索订单或设备':section==='feedback'?'搜索反馈':'搜索消息'));
  }
- bindListControls();bindMessageManagement();if(admin&&section==='users')bindAccountEvents();
+ bindListControls();bindMessageManagement();bindCampaignEvents();if(admin&&section==='users')bindAccountEvents();
  // Cloud management is usable independently; never imply that old APKs consume these rows.
  const notice=document.createElement('div');notice.className='sync-notice';notice.textContent='云端规则在已接入的新版 App 中约每小时同步一次；休眠可能延迟。可在 App 赞助中心立即同步，旧版 APK 不会自动接入。';if(admin)document.querySelector('.topbar').after(notice);
  if(section==='devices')bindDeviceEvents();
@@ -223,11 +231,11 @@ function visibleDevices(){
  const sorted=devices.filter(d=>matchesDeviceFilter(d,deviceFilter,entitlements)).sort((a,b)=>String(a[sort]||'').localeCompare(String(b[sort]||''),'zh-CN')*direction);
  return searchItems(sorted,deviceQuery,deviceSearchFields);
 }
-function rows(){const p=pageOf(visibleDevices(),devicePage,devicePageSize);devicePage=p.page;const shown=p.items;document.querySelector('#device-rows').innerHTML=shown.map(d=>`<tr class="${selected.has(d.id)?'selected':''}">${admin?`<td><input type="checkbox" data-device="${d.id}" ${selected.has(d.id)?'checked':''} aria-label="选择 ${esc(d.label||d.id)}"></td>`:''}<td><div class="device-name"><span class="device-avatar">▯</span><div><strong>${esc(d.label||'未命名设备')}</strong><small class="mono">${esc(d.device_hash.slice(0,12))}…</small></div></div></td><td>${badge(d)}<small class="cell-sub">${activeGrants(d).some(e=>!e.ends_at)?'永久':activeGrants(d).length?`至 ${time(activeGrants(d).map(e=>e.ends_at).sort().at(-1))}`:'—'}</small></td><td><span class="binding-state">${d.owner_id?'已绑定':'未绑定'}</span></td><td>${time(d.last_seen)}<small class="cell-sub">${esc(d.app_version||'暂无版本信息')}</small></td><td class="note-cell">${esc(d.note||'—')}</td></tr>`).join('')||`<tr><td colspan="6" class="empty-cell">${devices.length?'没有匹配的设备':'还没有设备记录。登记后会显示在这里。'}</td></tr>`;
+function rows(){const p=pageOf(visibleDevices(),devicePage,devicePageSize);devicePage=p.page;const shown=p.items;document.querySelector('#device-rows').innerHTML=shown.map(d=>`<tr class="${selected.has(d.id)?'selected':''}">${admin?`<td><input type="checkbox" data-device="${d.id}" ${selected.has(d.id)?'checked':''} aria-label="选择 ${esc(d.label||d.id)}"></td>`:''}<td><div class="device-name"><span class="device-avatar">▯</span><div><strong>${esc(d.label||'未命名设备')}</strong><small class="mono">${esc(d.device_hash.slice(0,12))}…</small></div></div></td><td>${badge(d)}${activeGrants(d).filter(e=>e.campaign_id).map(e=>`<small class="cell-sub">活动：${esc(e.campaign_title)}</small>`).join('')}<small class="cell-sub">${activeGrants(d).some(e=>!e.ends_at)?'永久':activeGrants(d).length?`至 ${time(activeGrants(d).map(e=>e.ends_at).sort().at(-1))}`:'—'}</small></td><td><span class="binding-state">${d.owner_id?'已绑定':'未绑定'}</span></td><td>${time(d.last_seen)}<small class="cell-sub">${esc(d.app_version||'暂无版本信息')}</small></td><td class="note-cell">${esc(d.note||'—')}</td><td><button class="text-button" data-device-campaign="${d.id}">限免活动管理</button></td></tr>`).join('')||`<tr><td colspan="7" class="empty-cell">${devices.length?'没有匹配的设备':'还没有设备记录。登记后会显示在这里。'}</td></tr>`;
  document.querySelectorAll('[data-device-pager]').forEach(el=>el.innerHTML=pagerHtml(p));
  document.querySelectorAll('[data-device-page]').forEach(b=>b.onclick=()=>{devicePage=Number(b.dataset.devicePage);rows();document.querySelector("[data-device-pager]")?.scrollIntoView({block:"start",behavior:"smooth"});});
  document.querySelectorAll('[data-page-size]').forEach(b=>b.onchange=()=>{devicePageSize=Number(b.value);devicePage=1;rows();});
- document.querySelectorAll('[data-device]').forEach(b=>b.onchange=()=>{b.checked?selected.add(b.dataset.device):selected.delete(b.dataset.device);rows();});const count=document.querySelector('#selection-count');if(count){const inside=visibleDevices().filter(d=>selected.has(d.id)).length;count.textContent=`已选择 ${selected.size} 台${selected.size-inside?` · 筛选外 ${selected.size-inside} 台`:''}`;}const all=document.querySelector('#select-page');if(all){all.checked=shown.length>0&&shown.every(d=>selected.has(d.id));all.indeterminate=shown.some(d=>selected.has(d.id))&&!all.checked;}}
+ document.querySelectorAll('[data-device-campaign]').forEach(b=>b.onclick=()=>deviceCampaignDialog([b.dataset.deviceCampaign]));document.querySelectorAll('[data-device]').forEach(b=>b.onchange=()=>{b.checked?selected.add(b.dataset.device):selected.delete(b.dataset.device);rows();});const count=document.querySelector('#selection-count');if(count){const inside=visibleDevices().filter(d=>selected.has(d.id)).length;count.textContent=`已选择 ${selected.size} 台${selected.size-inside?` · 筛选外 ${selected.size-inside} 台`:''}`;}const all=document.querySelector('#select-page');if(all){all.checked=shown.length>0&&shown.every(d=>selected.has(d.id));all.indeterminate=shown.some(d=>selected.has(d.id))&&!all.checked;}}
 function chosen(){if(!selected.size)throw Error('请先选择设备。');return [...selected];}
 function bindDeviceEvents(){if(!admin){document.querySelectorAll('#bind-device,[data-bind-device]').forEach(b=>b.addEventListener('click',openMemberBind));return;}rows();document.querySelector('#search').oninput=e=>{deviceQuery=e.target.value;devicePage=1;rows();};document.querySelector('#filter').onchange=e=>{deviceFilter=e.target.value;devicePage=1;rows();};root.querySelectorAll('[data-sort]').forEach(b=>b.onclick=()=>{direction=sort===b.dataset.sort?-direction:1;sort=b.dataset.sort;devicePage=1;rows();});root.querySelectorAll('[data-select]').forEach(b=>b.onclick=()=>{if(b.dataset.select==='none')selected.clear();else if(b.dataset.select==='only')selected=new Set(visibleDevices().map(d=>d.id));else visibleDevices().forEach(d=>b.dataset.select==='invert'&&selected.has(d.id)?selected.delete(d.id):selected.add(d.id));rows();});document.querySelector('#select-page')?.addEventListener('change',e=>{pageOf(visibleDevices(),devicePage,devicePageSize).items.forEach(d=>e.target.checked?selected.add(d.id):selected.delete(d.id));rows();});
  document.querySelector('#add-device')?.addEventListener('click',()=>dialog('登记已有设备',`<p>仅登记你已核对的设备。配对凭证有效 15 分钟，不要公开发布。</p><label>设备名称<input name="label" maxlength="120" placeholder="例如：用户设备 / vivo X100" required></label><label>完整设备码<input name="code" autocomplete="off" spellcheck="false" required></label>`,async f=>{const result=await rpc('lv_provision_device',{p_hash:await hashDevice(f.get('code').trim()),p_label:f.get('label')});await load();render();setTimeout(()=>dialog('一次性配对凭证',`<p>请通过你确认的设备持有者渠道交付。新凭证会替换旧凭证。</p><label>配对凭证<input readonly value="${esc(result.pairing_token)}" autocomplete="off"></label><p>15 分钟内有效，仅能使用一次。此凭证不直接授予赞助权益。</p>`,async()=>{},'已保存'),0);},'登记并生成配对凭证'));
@@ -235,9 +243,53 @@ function bindDeviceEvents(){if(!admin){document.querySelectorAll('#bind-device,[
  document.querySelector('#batch-grant')?.addEventListener('click',()=>{try{const ids=chosen();dialog(`设置 ${ids.length} 台设备的云端权益`,features()+`<label>截止日期<input name="end" type="datetime-local" min="${localDate(Date.now()+60000)}"></label><p>留空表示永久。新增权益不会覆盖已有永久授权。</p>`,async f=>{await rpc('lv_manage',{p_action:'grant',p_ids:ids,p_data:{features:f.getAll('feature'),ends_at:f.get('end')?new Date(f.get('end')).toISOString():null}});await load();render();});}catch(e){toast(e.message);}});
  document.querySelector('#batch-note')?.addEventListener('click',()=>{try{const ids=chosen();dialog('批量修改备注','<label>备注<textarea name="note" maxlength="2000" rows="4"></textarea></label>',async f=>{await rpc('lv_manage',{p_action:'note',p_ids:ids,p_data:{note:f.get('note')}});await load();render();});}catch(e){toast(e.message);}});
  document.querySelector('#batch-message')?.addEventListener('click',()=>{try{chosen();messageDialog([...selected]);}catch(e){toast(e.message);}});
+ document.querySelector('#batch-campaign')?.addEventListener('click',()=>{try{deviceCampaignDialog(chosen());}catch(e){toast(e.message);}});
  document.querySelector('#batch-more')?.addEventListener('click',()=>{try{const ids=chosen();dialog('管理选中设备',`<label>操作<select name="action"><option value="block">拉黑设备</option><option value="unblock">解除拉黑</option><option value="revoke">撤销选中设备的全部云端权益</option><option value="unbind">解除账号绑定</option></select></label><p>只影响此后台记录。旧版离线 APK 和已有离线激活码不会自动被撤销。</p>`,async f=>{await rpc('lv_manage',{p_action:f.get('action'),p_ids:ids,p_data:{}});await load();render();},'确认执行');}catch(e){toast(e.message);}});
 }
-function campaignDialog(){dialog('创建全员限免活动',`<label>活动名称<input name="title" maxlength="120" required></label>${features()}${dateField('start','开始时间',Date.now())}${dateField('end','结束时间',Date.now()+86400000)}<p>只增加活动权益，活动结束不会取消原有永久授权。</p>`,async f=>{await rpc('lv_publish',{p_type:'campaign',p_data:{title:f.get('title'),features:f.getAll('feature'),starts_at:new Date(f.get('start')).toISOString(),ends_at:new Date(f.get('end')).toISOString()}});await load();render();},'保存活动');}
+function campaignDialog(existing=null){
+ const fs=features();const el=dialog(existing?'编辑活动':'创建兑换码限免活动',`<label>活动名称<input name="title" maxlength="120" required value="${esc(existing?.title||'')}"></label>${fs}${dateField('start','开始时间',existing?.starts_at||Date.now())}${dateField('end','结束时间',existing?.ends_at||Date.now()+86400000)}<label>状态<select name="enabled"><option value="yes" ${existing?.enabled!==false?'selected':''}>启用</option><option value="no" ${existing?.enabled===false?'selected':''}>停止活动</option></select></label><p>只有兑换成功的设备获得活动权益。创建后请管理兑换码；活动结束不取消永久授权。停止后 App 下次成功同步才得知变更，离线设备不保证立即失效。</p>`,async f=>{
+  const data={title:f.get('title'),features:f.getAll('feature'),starts_at:new Date(f.get('start')).toISOString(),ends_at:new Date(f.get('end')).toISOString(),enabled:f.get('enabled')==='yes'};
+  if(Date.parse(data.ends_at)<=Date.parse(data.starts_at)||!data.features.length)throw Error('请勾选功能，且结束时间须晚于开始时间。');
+  if(existing)await rpc('lv_campaign_edit',{p_id:existing.id,p_data:data});else{const id=await rpc('lv_publish',{p_type:'campaign',p_data:data});if(!data.enabled)await rpc('lv_disable',{p_type:'campaign',p_id:id});}
+  await load();render();toast('活动已保存，请在管理兑换码中设置领取凭证。');
+ },'保存活动');
+ if(existing)el.querySelectorAll('[name="feature"]').forEach(b=>b.checked=existing.features.includes(b.value));
+}
+function codeDialog(campaign,code=null){
+ if(!campaignReady){toast('兑换接口尚未部署。');return;}
+ dialog(code?'编辑兑换码':'创建兑换码',codeFields(code,campaign,esc,localDate),async f=>{
+  const data=codePayload(f);if(Date.parse(data.expires_at)>Date.parse(campaign.ends_at)||Date.parse(data.expires_at)<=Date.parse(campaign.starts_at))throw Error('兑换截止时间须晚于活动开始，且不能超过活动结束时间。');
+  await rpc('lv_campaign_code_save',{p_id:code?.id||null,p_campaign:campaign.id,p_data:data,p_version:code?.edit_version||null});await load();render();toast('兑换码已保存。');
+ });
+}
+function codesDialog(campaign){
+ const el=dialog('管理活动兑换码',campaignCodesView(campaign,campaignCodes.filter(c=>c.campaign_id===campaign.id),esc,time),async()=>{},'关闭');
+ el.querySelector('[data-code-new]').onclick=()=>codeDialog(campaign);
+ el.querySelectorAll('[data-code-edit]').forEach(b=>b.onclick=()=>codeDialog(campaign,campaignCodes.find(c=>c.id===b.dataset.codeEdit)));
+ const codeFilter=()=>el.querySelectorAll('[data-code-row]').forEach(row=>{const c=campaignCodes.find(c=>c.id===row.dataset.codeRow);row.hidden=!matches(c.code,el.querySelector('[data-code-search]').value)||(el.querySelector('[data-code-filter]').value!=='all'&&campaignCodeState(c)!==el.querySelector('[data-code-filter]').value);});
+ el.querySelector('[data-code-search]').oninput=codeFilter;el.querySelector('[data-code-filter]').onchange=codeFilter;
+}
+function deviceCampaignDialog(ids,campaignId=null){
+ if(!campaignReady){toast('兑换接口尚未部署。');return;}
+ const members=campaignClaims.filter(m=>ids.includes(m.device_id)&&(!campaignId||m.campaign_id===campaignId));
+ const options=campaigns.filter(c=>members.some(m=>m.campaign_id===c.id));
+ if(!members.length){dialog('限免活动管理','<p>这些设备尚未兑换活动，没有可撤销或恢复的资格。请向用户交付兑换码，由绑定账号领取。</p>',async()=>{},'关闭');return;}
+ dialog(`管理 ${ids.length} 台设备的限免活动`,`<label>活动<select name="campaign">${options.map(c=>`<option value="${c.id}">${esc(c.title)}</option>`).join('')}</select></label><div class="table-scroll"><table><thead><tr><th>设备</th><th>活动名称</th><th>资格</th></tr></thead><tbody>${members.map(m=>`<tr><td>${esc(devices.find(d=>d.id===m.device_id)?.label||m.device_id)}</td><td>${esc(campaigns.find(c=>c.id===m.campaign_id)?.title)}</td><td>${m.revoked_at?'已撤销':'已领取'}</td></tr>`).join('')}</tbody></table></div><label>操作<select name="action"><option value="revoke">撤销此活动资格</option><option value="restore">恢复已领取的资格</option></select></label><p>只处理选中设备已兑换的指定活动，不授予新资格、不影响永久赞助。已停止或过期的活动不会因恢复资格而重新开放。</p>`,async f=>{
+  const n=await rpc('lv_campaign_members_manage',{p_campaign:f.get('campaign'),p_devices:ids,p_action:f.get('action')});await load();render();toast(`已处理 ${n} 条活动资格。`);
+ });
+}
+function bindCampaignEvents(){
+ if(admin){
+  root.querySelectorAll('[data-campaign-edit]').forEach(b=>b.onclick=()=>campaignDialog(campaigns.find(c=>c.id===b.dataset.campaignEdit)));
+  root.querySelectorAll('[data-campaign-codes]').forEach(b=>b.onclick=()=>codesDialog(campaigns.find(c=>c.id===b.dataset.campaignCodes)));
+  root.querySelectorAll('[data-campaign-members]').forEach(b=>b.onclick=()=>{const ids=campaignClaims.filter(m=>m.campaign_id===b.dataset.campaignMembers).map(m=>m.device_id);if(!ids.length){toast('此活动尚无兑换设备。');return;}deviceCampaignDialog(ids,b.dataset.campaignMembers);});
+ }else document.querySelector('#redeem-campaign')?.addEventListener('click',()=>{
+  if(!devices.length){toast('请先绑定你的设备。');return;}if(!campaignReady){toast('兑换功能暂不可用，请稍后重试。');return;}
+  dialog('兑换限免活动',`<label>绑定设备<select name="device">${devices.filter(d=>!d.blocked).map(d=>`<option value="${d.id}">${esc(d.label||'我的设备')}</option>`).join('')}</select></label><label>兑换码<input name="code" minlength="4" maxlength="64" autocomplete="off" required></label><p>兑换码仅用于领取对应活动的限时权益，不会替换永久赞助。</p>`,async f=>{
+   const r=await rpc('lv_campaign_redeem',{p_code:f.get('code'),p_device:f.get('device')});if(!r.ok)throw Error(r.error==='rate_limited'?'兑换尝试过于频繁，一小时后再试。':'兑换码不可用、活动未开始或已结束，请核对后再试。');await load();render();toast(`${r.duplicate?'此设备已领取':'兑换成功'}：${r.title}。App 下次成功同步后生效。`);
+  },'确认兑换');
+ });
+}
 function messageDialog(ids=[],existing=null){
  if(existing&&existing.target_ids.some(id=>!devices.some(d=>d.id===id))){toast('部分接收设备尚未加载，请先刷新完整设备列表。');return;}
  const value=(key,fallback='')=>esc(existing?.[key]??fallback);
