@@ -19,6 +19,30 @@ async function envelope(domain:string,p:Record<string,unknown>){
   return JSON.stringify({payload:b64(encoder.encode(payload)),signature:await sign(domain,payload),
     delegation:b64(encoder.encode(Deno.env.get("LV_CLOUD_DELEGATION")??""))});
 }
+async function proofLicense(text:unknown,code:string,legacy:string):Promise<string|null>{
+  try{
+    if(typeof text!=="string"||text.length>16384)return null;
+    const e=JSON.parse(text),raw=decode(e.payload),p=JSON.parse(new TextDecoder().decode(raw));
+    if(canonical(p)!==new TextDecoder().decode(raw)||p.algorithm!=="Ed25519"||p.format_version!==1||p.product!=="LiquidVivo"||
+      !((p.device_binding_version===2&&p.device_code===code)||(p.device_binding_version===1&&p.device_code===legacy))||
+      !/^[0-9a-f-]{36}$/.test(p.license_id)||!Array.isArray(p.features)||p.sponsor_tier!=="supporter"||
+      (p.expires_at!==null&&!(Date.parse(p.expires_at)>Date.now())))return null;
+    const roots=JSON.parse(Deno.env.get("LV_ROOT_KEYS")??"{}");let publicKey=roots[p.key_id];
+    if(publicKey){if(e.delegation)return null;}
+    else{
+      const cert=JSON.parse(new TextDecoder().decode(decode(e.delegation))),certBytes=decode(cert.payload);
+      const c=JSON.parse(new TextDecoder().decode(certBytes));
+      if(canonical(c)!==new TextDecoder().decode(certBytes)||c.key_id!==p.key_id||c.algorithm!=="Ed25519"||c.format_version!==1||
+        c.product!=="LiquidVivo"||c.permissions!=="notification_island.status_bar.policy"||!roots[c.issuer_key_id]||cert.delegation||
+        p.device_binding_version!==2||p.features.some((f:string)=>!["notification_island","status_bar"].includes(f)))return null;
+      const root=await crypto.subtle.importKey("raw",decode(roots[c.issuer_key_id]),"Ed25519",false,["verify"]);
+      if(!await crypto.subtle.verify("Ed25519",root,decode(cert.signature),encoder.encode("LiquidVivo/cloud-delegation/v1\n"+new TextDecoder().decode(certBytes))))return null;
+      publicKey=c.public_key;
+    }
+    const key=await crypto.subtle.importKey("raw",decode(publicKey),"Ed25519",false,["verify"]);
+    return await crypto.subtle.verify("Ed25519",key,decode(e.signature),encoder.encode("LiquidVivo/license/v1\n"+new TextDecoder().decode(raw)))?p.license_id:null;
+  }catch{return null;}
+}
 Deno.serve(async(request:Request)=>{
   if(request.method!=="POST")return new Response('{"error":"method"}',{status:405,headers});
   try{
@@ -46,9 +70,16 @@ Deno.serve(async(request:Request)=>{
     const client=createClient(Deno.env.get("SUPABASE_URL")!,Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,{auth:{persistSession:false,autoRefreshToken:false}});
     const {data:user,error:authError}=await client.auth.getUser(token);
     if(authError||!user.user)return new Response('{"error":"authentication"}',{status:401,headers});
-    const {data,error}=await client.rpc("lv_cloud_exchange",{p_actor:user.user.id,p_code:body.device_code,
-      p_legacy:body.legacy_code,p_version:body.version,p_label:body.label,p_receipts:body.receipts});
+    const args={p_actor:user.user.id,p_code:body.device_code,p_legacy:body.legacy_code,p_version:body.version,p_label:body.label,p_receipts:body.receipts};
+    let {data,error}=await client.rpc("lv_cloud_exchange",args);
     if(error)throw new Error("exchange");
+    if(!data.installation_authorized){
+      const proof=await proofLicense(body.license_proof,body.device_code,body.legacy_code);
+      if(proof){
+        const resumed=await client.rpc("lv_cloud_resume",{p_actor:user.user.id,p_code:body.device_code,p_license_id:proof});
+        if(!resumed.error&&resumed.data===true){const again=await client.rpc("lv_cloud_exchange",args);if(again.error)throw new Error("exchange");data=again.data;}
+      }
+    }
     const certificate=JSON.parse(Deno.env.get("LV_CLOUD_DELEGATION")??"");
     const authority=JSON.parse(new TextDecoder().decode(decode(certificate.payload)));
     const licenses:string[]=[];const imported=new Set<string>();

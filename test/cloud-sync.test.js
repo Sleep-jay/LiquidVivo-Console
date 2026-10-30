@@ -15,19 +15,28 @@ const certPayload=canonical({algorithm:'Ed25519',format_version:1,issuer_key_id:
  permissions:'notification_island.status_bar.policy',product:'LiquidVivo',public_key:b64(pub)});
 const cert=JSON.stringify({payload:b64(certPayload),signature:b64(sign(null,Buffer.from('LiquidVivo/cloud-delegation/v1\n'+certPayload),root.privateKey))});
 const env={LV_CLOUD_PKCS8:b64(child.privateKey.export({format:'der',type:'pkcs8'})),LV_CLOUD_DELEGATION:cert,
+ LV_ROOT_KEYS:JSON.stringify({'test-only-root':b64(root.publicKey.export({format:'der',type:'spki'}).subarray(-32))}),
  SUPABASE_URL:'https://fixture.invalid',SUPABASE_SERVICE_ROLE_KEY:'test-only'};
 const code='LV2-'+'A'.repeat(52),nonce='0123456789abcdef0123456789abcdef';
 function fixture(exchange={}){
- let handler,calls=0;
+ let handler,calls=0,resumes=0;
  const data={revision:'10',device_code:code,blocked:false,sponsor_revoked:false,bound:true,installation_authorized:true,
   revoked_license_ids:[],pairing_token:'',legacy_licenses:[],messages:[],grants:[{
    id:'b8c65347-ae5f-482d-a505-5ac8add32cd5',features:['status_bar','notification_island'],starts_at:'2026-01-01T00:00:00+00:00',ends_at:null}],...exchange};
  const client={auth:{getUser:async token=>token==='valid-jwt'?{data:{user:{id:'test-user'}}}:{data:{user:null},error:'bad-token'}},
-  rpc:async(name,args)=>{calls++;assert.equal(name,'lv_cloud_exchange');assert.equal(args.p_actor,'test-user');return {data,error:null};}};
+  rpc:async(name,args)=>{calls++;assert.equal(args.p_actor,'test-user');
+   if(name==='lv_cloud_resume'){resumes++;const ok=!data.blocked&&!data.sponsor_revoked&&!data.revoked_license_ids.includes(args.p_license_id);if(ok)data.installation_authorized=true;return {data:ok,error:null};}
+   assert.equal(name,'lv_cloud_exchange');return {data,error:null};}};
  new Function('Deno','createClient',js)({env:{get:n=>env[n]},serve:h=>handler=h},()=>client);
  const request=(body={},token='valid-jwt')=>handler(new Request('https://fixture.invalid/cloud-sync',{
   method:'POST',headers:token?{authorization:'Bearer '+token}:{},body:JSON.stringify({device_code:code,legacy_code:'',version:'603',label:'Test phone',nonce,receipts:[],...body})}));
- return {request,calls:()=>calls};
+ return {request,calls:()=>calls,resumes:()=>resumes};
+}
+function proof(){
+ const p={algorithm:'Ed25519',format_version:1,device_binding_version:2,device_code:code,expires_at:null,
+  features:['notification_island'],issued_at:'2026-01-01T00:00:00Z',key_id:'test-only-child',
+  license_id:'b8c65347-ae5f-482d-a505-5ac8add32cd5',product:'LiquidVivo',sponsor_tier:'supporter'};
+ const raw=canonical(p);return JSON.stringify({payload:b64(raw),signature:b64(sign(null,Buffer.from('LiquidVivo/license/v1\n'+raw),child.privateKey)),delegation:b64(cert)});
 }
 function payload(text,domain){
  const e=JSON.parse(text),raw=Buffer.from(e.payload,'base64url');
@@ -67,4 +76,20 @@ test('revocation IDs and blocked decision are covered by signed policy',async()=
 });
 test('unsafe feature mapping never emits a license',async()=>{
  const r=await fixture({grants:[{id:'b8c65347-ae5f-482d-a505-5ac8add32cd5',features:['arbitrary_feature']}]}).request();assert.equal(r.status,503);
+});
+test('reinstallation silently reconnects using a verified existing license without website login',async()=>{
+ const f=fixture({installation_authorized:false,grants:[]});const r=await f.request({license_proof:proof()});
+ assert.equal(r.status,200);assert.equal(f.resumes(),1);
+ assert.equal(payload(await r.text(),'LiquidVivo/cloud-policy/v1\n').installation_authorized,true);
+});
+test('tampered proof cannot reconnect an installation',async()=>{
+ const f=fixture({installation_authorized:false,grants:[]});const p=JSON.parse(proof());p.signature=(p.signature.startsWith('A')?'B':'A')+p.signature.slice(1);
+ const r=await f.request({license_proof:JSON.stringify(p)});assert.equal(r.status,200);assert.equal(f.resumes(),0);
+ assert.equal(payload(await r.text(),'LiquidVivo/cloud-policy/v1\n').installation_authorized,false);
+});
+test('valid old proof does not override blocked or revoked entitlement',async()=>{
+ for(const restriction of [{blocked:true},{sponsor_revoked:true},{revoked_license_ids:['b8c65347-ae5f-482d-a505-5ac8add32cd5']}]){
+  const f=fixture({installation_authorized:false,grants:[],...restriction});const r=await f.request({license_proof:proof()});
+  assert.equal(payload(await r.text(),'LiquidVivo/cloud-policy/v1\n').installation_authorized,false);
+ }
 });
