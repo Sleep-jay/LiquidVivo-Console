@@ -9,7 +9,8 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
-    "@supabase/supabase-js": "2.118.0"
+    "@supabase/supabase-js": "2.118.0",
+    "pinyin-pro": "3.29.5"
   },
   "devDependencies": {
     "vite": "6.4.5"
