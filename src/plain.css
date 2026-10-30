@@ -35,3 +35,16 @@ tr.selected{background:#f5f5f5}.binding-callout{border-color:#bbb}
 @media(prefers-color-scheme:dark){:root{--ink:#e5e5e5;--muted:#929292;--paper:#202020;--line:#343434;--accent:#dedede;--soft:#2a2a2a;background:#171717;color:var(--ink)}.primary{color:#202020}.sidebar{background:#1b1b1b}.nav.active{background:#292929;border-color:#393939;box-shadow:none}.brand-mark{border-color:#525252;background:linear-gradient(130deg,#ffffff10,#ffffff02);box-shadow:inset 1px 1px 0 #ffffff25}.badge.green,.badge.blue{background:#303030;color:#ccc}tr.selected{background:#292929}.badge.danger{background:#452f2f;color:#ddb0aa}.auth-card{box-shadow:none}#toast{background:#dedede;color:#202020}}
 
 .device-pagination{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 20px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}.page-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.page-controls label{display:flex;align-items:center;gap:8px}.page-controls select{padding:7px 9px;width:auto}.page-controls button{padding:7px 12px;font-size:12px}.page-controls button:disabled{opacity:.35;cursor:default}@media(max-width:760px){.device-pagination{align-items:flex-start;flex-direction:column;padding:12px}.page-controls{gap:6px}.page-controls button{padding:7px 9px}}
+
+/* Native controls and dialog scrim follow the neutral theme too. */
+:root{color-scheme:light}
+.modal::backdrop{background:rgb(0 0 0 / 45%)}
+.modal{background:var(--paper);border:1px solid var(--line)}
+.audience-picker{border:1px solid var(--line);border-radius:9px;padding:0 14px}
+.audience-picker[hidden],.audience-device[hidden],.audience-picker [hidden]{display:none}
+.audience-tools{display:flex;align-items:center;flex-wrap:wrap;gap:12px;font-size:11px;color:var(--muted);margin-bottom:12px}
+.audience-tools button{font-size:11px;text-decoration:underline;padding:4px 0}
+.audience-devices{max-height:220px;overflow:auto;overscroll-behavior:contain}
+.audience-device{display:flex;flex-direction:row;align-items:center;gap:10px;margin:0;padding:10px 0;border-top:1px solid var(--line);cursor:pointer}
+.audience-device span{min-width:0;overflow-wrap:anywhere}.audience-device strong{font-size:12px;font-weight:500}.audience-device small{display:block;color:var(--muted);margin-top:5px}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark}}
