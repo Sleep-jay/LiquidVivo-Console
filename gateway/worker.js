@@ -27,10 +27,13 @@ export default {
    const method=request.headers.get('Access-Control-Request-Method');
    if(!origin||!allowed(url.pathname,method))return failure(403,'route_denied',h);
    h.set('Access-Control-Allow-Methods','GET,HEAD,POST,PUT,DELETE,OPTIONS');
-   h.set('Access-Control-Allow-Headers','authorization,apikey,content-type,x-client-info,prefer,range,x-supabase-api-version');
+   h.set('Access-Control-Allow-Headers','authorization,apikey,content-type,x-client-info,prefer,range,x-supabase-api-version,accept-profile,content-profile');
    return new Response(null,{status:204,headers:h});
   }
   if(!allowed(url.pathname,request.method))return failure(404,'route_denied',h);
+  for(const key of ['accept-profile','content-profile']){
+   const value=request.headers.get(key);if(value&&value!=='public')return failure(403,'schema_denied',h);
+  }
   if(env.REQUEST_LIMITER){
    const result=await env.REQUEST_LIMITER.limit({key:request.headers.get('CF-Connecting-IP')||'unknown'});
    if(!result.success)return failure(429,'rate_limited',h);
@@ -44,7 +47,7 @@ export default {
    body=new Uint8Array(length);let offset=0;for(const part of parts){body.set(part,offset);offset+=part.length;}
   }
   const headers=new Headers();
-  for(const key of ['authorization','apikey','content-type','x-client-info','prefer','range','x-supabase-api-version']){
+  for(const key of ['authorization','apikey','content-type','x-client-info','prefer','range','x-supabase-api-version','accept-profile','content-profile']){
    const value=request.headers.get(key);if(value)headers.set(key,value);
   }
   headers.set('Cache-Control','no-store');

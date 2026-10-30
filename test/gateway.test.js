@@ -22,4 +22,7 @@ test('gateway bounds request bodies and validates browser preflight routes',asyn
  const response=await worker.fetch(new Request('https://api.example.com/functions/v1/cloud-sync',{method:'POST',body:'x'.repeat(131073)}));assert.equal(response.status,413);
  const preflight=await worker.fetch(new Request('https://api.example.com/auth/v1/token',{method:'OPTIONS',headers:{Origin:'https://sleep-jay.github.io','Access-Control-Request-Method':'POST'}}));
  assert.equal(preflight.status,204);assert.equal(preflight.headers.get('Access-Control-Allow-Origin'),'https://sleep-jay.github.io');
+ assert.ok(preflight.headers.get('Access-Control-Allow-Headers').split(',').includes('content-profile'));
+ assert.ok(preflight.headers.get('Access-Control-Allow-Headers').split(',').includes('accept-profile'));
+ assert.equal((await worker.fetch(new Request('https://api.example.com/rest/v1/lv_devices',{headers:{'Accept-Profile':'private'}}))).status,403);
 });

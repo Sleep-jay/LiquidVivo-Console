@@ -16,3 +16,7 @@
 生成文件勿单独编辑：修改 ../gateway/worker.js 或 ../gateway/cloudbase-adapter.cjs，再执行 `node console/gateway/build-cloudbase.mjs`。回归执行 `node --test console/test/cloudbase-gateway.test.js console/test/gateway.test.js console/test/cloudbase-probe.test.js`。
 
 当前没有网关级持久分布式限流；仍需检查云平台配额和上游 Auth 限流。浏览器 Origin 限制不是身份验证，也不能阻止非浏览器请求。免费体验期、资源点、默认域名的开发测试限制仍适用；网关不减少 Supabase 函数调用配额。
+
+## 网页 PostgREST 请求头兼容
+
+首次部署的白名单遗漏 SDK 默认的 `Content-Profile: public` / `Accept-Profile: public`，浏览器数据库请求会在预检被拦截，出现 Failed to fetch。修订版网关补充两个头并仅接受 public schema。网页 `src/gateway-fetch.js` 同时移除语义冗余的 public profile 头（PostgREST 缺省即 public），兼容尚未重部署的初版网关；不改变认证头、请求体、方法、取消信号，也不转回旧地址。其他 schema 不会被偷偷改成 public。测试使用真实 Supabase SDK 发出 Auth/RPC/表查询，并将最终头与初版白名单逐项比对；HTTP 成功或 OPTIONS 返回204本身不能证明浏览器预检通过。

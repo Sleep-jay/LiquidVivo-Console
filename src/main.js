@@ -1,6 +1,7 @@
 import {pageOf,pagerHtml} from './pagination.js';
 import { createClient } from '@supabase/supabase-js';
 import { config } from './config.js';
+import { gatewayFetch } from './gateway-fetch.js';
 import './style.css';
 import './plain.css';
 import './member.css';
@@ -17,7 +18,7 @@ const storage = {
   setItem: (k,v) => { const persistent = localStorage.getItem(storeKey)==='yes'; (persistent?localStorage:sessionStorage).setItem(k,v); (persistent?sessionStorage:localStorage).removeItem(k); },
   removeItem: k => { sessionStorage.removeItem(k); localStorage.removeItem(k); },
 };
-const api = createClient(config.url, config.publishableKey, {auth:{storage,storageKey:config.authStorageKey,persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,flowType:'pkce'}});
+const api = createClient(config.url, config.publishableKey, {global:{fetch:gatewayFetch},auth:{storage,storageKey:config.authStorageKey,persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,flowType:'pkce'}});
 let session, admin=false, section='devices', devices=[], entitlements=[], messages=[], campaigns=[], audit=[], selected=new Set(), sort='created_at', direction=-1;
 let authMode='login', authBusy=false, recovery=false;
 let sponsorOrders=[],feedbackItems=[],sponsorReady=false;
