@@ -26,3 +26,16 @@ test('gateway bounds request bodies and validates browser preflight routes',asyn
  assert.ok(preflight.headers.get('Access-Control-Allow-Headers').split(',').includes('accept-profile'));
  assert.equal((await worker.fetch(new Request('https://api.example.com/rest/v1/lv_devices',{headers:{'Accept-Profile':'private'}}))).status,403);
 });
+test('email OTP route supports browser preflight and forwards only POST to fixed Auth',async()=>{
+ const preflight=await worker.fetch(new Request('https://api.example.com/auth/v1/otp',{method:'OPTIONS',headers:{Origin:'https://sleep-jay.github.io','Access-Control-Request-Method':'POST'}}));
+ assert.equal(preflight.status,204);
+ assert.equal((await worker.fetch(new Request('https://api.example.com/auth/v1/otp'))).status,404);
+ const original=globalThis.fetch;
+ globalThis.fetch=async(url,options)=>{
+  assert.equal(url,'https://drboqyxccvvsxcbusvrv.supabase.co/auth/v1/otp');assert.equal(options.method,'POST');
+  assert.equal(JSON.parse(new TextDecoder().decode(options.body)).create_user,false);
+  return new Response('{}');
+ };
+ try{assert.equal((await worker.fetch(new Request('https://api.example.com/auth/v1/otp',{method:'POST',body:JSON.stringify({email:'fixture@example.com',create_user:false})}))).status,200);}
+ finally{globalThis.fetch=original;}
+});

@@ -7,6 +7,7 @@ function allowed(path,method){
  if(path==='/functions/v1/cloud-sync')return method==='POST';
  if(/^\/rest\/v1\/rpc\/lv_[a-z_]+$/.test(path))return method==='POST';
  if(/^\/rest\/v1\/lv_[a-z_]+$/.test(path))return ['GET','HEAD'].includes(method);
+ if(path==='/auth/v1/otp')return method==='POST';
  if(/^\/auth\/v1\/(signup|token|user|verify|logout|recover|resend|reauthenticate|settings)$/.test(path))return METHODS.has(method);
  return false;
 }

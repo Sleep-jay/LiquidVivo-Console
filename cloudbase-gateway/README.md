@@ -19,4 +19,6 @@
 
 ## 网页 PostgREST 请求头兼容
 
+2026-10-30 邮箱发送修复：实际在线 `/api/auth/v1/otp` 的 POST 预检返回403 route_denied，初版漏了 signInWithOtp 使用的路径。现仅允许该路径 POST 和对应 OPTIONS；未扩大到任意 Auth 路径。需重新部署本目录 index.js 才生效。网页仅在发信请求成功后保存 sent 时间，失败不展示成功发送倒计时。不用修改 SMTP 密码或密钥，不通过直连原不可达地址绕过网关。49项本地测试通过，真实邮件投递仍待部署后核验。
+
 首次部署的白名单遗漏 SDK 默认的 `Content-Profile: public` / `Accept-Profile: public`，浏览器数据库请求会在预检被拦截，出现 Failed to fetch。修订版网关补充两个头并仅接受 public schema。网页 `src/gateway-fetch.js` 同时移除语义冗余的 public profile 头（PostgREST 缺省即 public），兼容尚未重部署的初版网关；不改变认证头、请求体、方法、取消信号，也不转回旧地址。其他 schema 不会被偷偷改成 public。测试使用真实 Supabase SDK 发出 Auth/RPC/表查询，并将最终头与初版白名单逐项比对；HTTP 成功或 OPTIONS 返回204本身不能证明浏览器预检通过。

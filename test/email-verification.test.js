@@ -15,6 +15,12 @@ test('sending creates server password check and never auto-registers account',as
  assert.equal(f.calls[0][0],'lv_admin_begin_email');
  assert.deepEqual(f.calls[1][1],{email:'owner@example.com',options:{shouldCreateUser:false}});
 });
+test('failed delivery request does not start a successful-send cooldown or grant admin',async()=>{
+ const f=setup();f.auth.signInWithOtp=async()=>({error:Error('Failed to fetch')});
+ await assert.rejects(f.client.send('owner@example.com','owner'),/Failed to fetch/);
+ assert.equal(f.client.lastSent(),0);
+ assert.equal(f.calls.filter(x=>x[0]==='lv_admin_complete_email').length,0);
+});
 test('invalid or expired local step never calls email verification',async()=>{
  const f=setup();await assert.rejects(f.client.verify('x','owner','123456'),/失效/);
  await f.client.send('x','owner');f.advance();await assert.rejects(f.client.verify('x','owner','123456'),/失效/);

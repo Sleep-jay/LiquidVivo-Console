@@ -3,9 +3,12 @@ export function createEmailConfirmation({auth,rpc,storage,now=Date.now}) {
   return {
     async send(email,userId){
       const token=await rpc('lv_admin_begin_email');
-      storage.setItem(KEY,JSON.stringify({token,userId,expires:now()+15*60000,sent:now()}));
+      const pending={token,userId,expires:now()+15*60000,sent:0};
+      storage.setItem(KEY,JSON.stringify(pending));
       const {error}=await auth.signInWithOtp({email,options:{shouldCreateUser:false}});
       if(error)throw error;
+      pending.sent=now();
+      storage.setItem(KEY,JSON.stringify(pending));
     },
     async verify(email,userId,code){
       if(!/^[0-9]{6,10}$/.test(code))throw Error('请输入邮件中的数字验证码');
