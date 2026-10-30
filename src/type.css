@@ -1,0 +1,2 @@
+/* System fonts keep Chinese text crisp without third-party font requests. */
+@font-face{font-family:Inter;src:local("Inter");font-display:swap}
