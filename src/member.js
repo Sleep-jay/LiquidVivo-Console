@@ -1,6 +1,6 @@
 // Member-only presentation. No device inventory, bulk actions, or management navigation.
 export function memberShell({content,email,section,esc}) {
-  const tabs={devices:'我的设备',messages:'我的消息',account:'账号设置'};
+  const tabs={devices:'我的设备',sponsor:'赞助支持',messages:'我的消息',feedback:'意见反馈',account:'账号设置'};
   return `<div class="member-app"><header class="member-header"><a class="brand" href="#"><span class="brand-mark">L<span>V</span></span>LiquidVivo <small>用户中心</small></a><nav aria-label="用户中心">${Object.entries(tabs).map(([key,title])=>`<button data-section="${key}" class="${section===key?'active':''}">${title}</button>`).join('')}</nav><button id="logout" class="text-button">退出登录</button></header><main class="member-main">${content}</main><footer class="member-footer">${esc(email)} · LiquidVivo 用户中心</footer></div>`;
 }
 export function memberDevices({devices,entitlements,campaigns,time,esc}) {
