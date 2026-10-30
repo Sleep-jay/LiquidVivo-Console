@@ -1,5 +1,14 @@
 const NAME = 'LiquidVivo 管理员';
 
+export function totpQrSource(value) {
+  let svg=String(value||'');
+  for(const prefix of ['data:image/svg+xml;utf-8,','data:image/svg+xml,'])
+    if(svg.startsWith(prefix)){svg=svg.slice(prefix.length);break;}
+  if(svg.startsWith('%3C')||svg.startsWith('%3c'))svg=decodeURIComponent(svg);
+  if(svg.length>100000||!svg.trimStart().startsWith('<svg'))throw Error('验证器二维码格式无效，请重新连接。');
+  return 'data:image/svg+xml,'+encodeURIComponent(svg);
+}
+
 /** Single-flight per account; secrets live only in this page's memory. */
 export function createMfaCoordinator(mfa) {
   let cached = null;

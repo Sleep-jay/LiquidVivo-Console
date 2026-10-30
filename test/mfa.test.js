@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createMfaCoordinator} from '../src/mfa.js';
+import {createMfaCoordinator,totpQrSource} from '../src/mfa.js';
 const name='LiquidVivo 管理员';
+test('QR handles SDK data URI without wrapping a URI as SVG text',()=>{
+ const svg='<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+ const expected='data:image/svg+xml,'+encodeURIComponent(svg);
+ assert.equal(totpQrSource(svg),expected);
+ assert.equal(totpQrSource('data:image/svg+xml;utf-8,'+svg),expected);
+ assert.equal(totpQrSource(expected),expected);
+ assert.throws(()=>totpQrSource('https://other.example/qr'));
+});
 function fixture(factors=[]){
  const calls={enroll:0,removed:[]};
  const api={
