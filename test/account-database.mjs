@@ -126,5 +126,29 @@ if(process.argv.includes('--campaigns')){
  assert.equal((await value('select public.lv_campaign_redeem($1,$2) as value',['invalid',odid])).error,'rate_limited');
  console.log('PASS: code-only cloud grants, redemption/duplicate quota, ownership and RLS, stale edits, disabling codes versus claims, revocation/restoration and throttling.');
 }
+if(process.argv.includes('--push')){
+ await db.exec(`create schema if not exists cron;create function cron.schedule(text,text,text) returns bigint language sql as $$select 1::bigint$$;`);
+ for(const file of ['007_push_registration.sql','008_message_management.sql','011_immediate_push.sql','011_immediate_push.sql'])await db.exec((await readFile(new URL('../supabase/'+file,import.meta.url),'utf8')).replace('create extension if not exists pg_cron with schema pg_catalog;',''));
+ await claims(admin,sid);
+ const mid=await value(`insert into public.lv_messages(title,body,kind,all_devices,starts_at,ends_at) values('Urgent','Test','notification',true,now()-interval '1 minute',now()+interval '1 hour') returning id as value`);
+ const job='70000000-0000-4000-8000-000000000001';
+ await db.exec('set role authenticated');
+ await value('select public.lv_push_begin($1,$2,1) as value',[job,mid]);
+ assert.equal(await value('select public.lv_push_begin($1,$2,1) as value',[job,mid]),job);
+ let status=await value('select public.lv_push_status($1) as value',[job]);assert.ok(status.counts.no_registration>0);
+ await assert.rejects(db.query('select public.lv_push_claim($1,gen_random_uuid())',[job]),/permission denied/);
+ await db.exec('reset role');
+ await db.query("update private.lv_push_deliveries set state='queued' where job_id=$1",[job]);
+ await db.exec('set role service_role');
+ const worker='70000000-0000-4000-8000-000000000002';
+ const batch=await value('select public.lv_push_claim($1,$2) as value',[job,worker]);assert.ok(batch.length>0);
+ for(const row of batch)await value('select public.lv_push_finish($1,$2,$3,0,$4) as value',[row.id,worker,'accepted','fixture-task']);
+ assert.equal((await value('select public.lv_push_claim($1,$2) as value',[job,worker])).length,0,'Finalized rows must never resend');
+ await db.exec('reset role');await db.exec('set role authenticated');
+ await value('select public.lv_push_status($1,true) as value',[job]);
+ await db.exec('reset role');await claims(member,msid);await db.exec('set role authenticated');
+ await assert.rejects(db.query('select public.lv_push_status($1)',[job]),/管理员/);await db.exec('reset role');
+ console.log('PASS: push migrations/reapply, administrator-only jobs, job idempotency, missing registrations, cancellation, service-only worker.');
+}
 await db.close();
 console.log('PASS: real migration and reapply, role privileges, administrator protection, idempotency, old-session denial, security-definer guard, pairing consumption and registration limits (local PostgreSQL engine; hosted Auth not exercised).');

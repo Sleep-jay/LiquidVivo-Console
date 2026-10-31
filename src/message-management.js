@@ -1,13 +1,14 @@
+import {decodeReleaseNotes} from './release-notes.js';
 export const messageKinds={dialog:'应用内弹窗',banner:'应用内横幅',notification:'系统通知',changelog:'更新日志',update:'版本更新提示'};
 export function messageState(m,now=Date.now()){
   if(m.deleted_at)return 'trash';if(!m.enabled)return 'stopped';if(Date.parse(m.ends_at)<=now)return 'expired';if(Date.parse(m.starts_at)>now)return 'scheduled';return 'active';
 }
 export const messageStates={all:'全部消息',active:'投放中',scheduled:'未开始',expired:'已结束',stopped:'已停止',trash:'回收站'};
-export function messageCards(list,{esc,time,ready=true,now=Date.now()}){
+export function messageCards(list,{esc,time,ready=true,now=Date.now(),pushJobs=[]}){
   const labels={active:'投放中',scheduled:'未开始',expired:'已结束',stopped:'已停止',trash:'回收站'};
   return list.map(m=>{
     const state=messageState(m,now),trash=state==='trash';
-    return `<article class="content-card"><div class="card-top"><span class="badge neutral">${labels[state]}</span><small>${esc(messageKinds[m.kind]||m.kind)}</small></div><h2>${esc(m.title)}</h2><p>${esc(m.body)}</p><div class="item-meta">${time(m.starts_at)}<br>至 ${time(m.ends_at)}</div><div class="item-meta">${m.all_devices?'所有设备':`${m.target_ids.length} 台指定设备`}</div>${trash?`<p>删除于 ${time(m.deleted_at)}<br>到期清理：${time(new Date(Date.parse(m.deleted_at)+7*86400000).toISOString())}</p><button class="text-button" data-message-restore="${esc(m.id)}" ${ready&&Date.parse(m.deleted_at)+7*86400000>now?'':'disabled'}>恢复为已停止</button>`:`<div class="content-actions"><button class="text-button" data-message-edit="${esc(m.id)}" ${ready?'':'disabled'}>编辑</button>${m.enabled?`<button class="text-button" data-message-stop="${esc(m.id)}" ${ready?'':'disabled'}>停止投放</button>`:''}<button class="text-button danger-text" data-message-trash="${esc(m.id)}" ${ready?'':'disabled'}>删除</button></div>`}</article>`;
+    return `<article class="content-card"><div class="card-top"><span class="badge neutral">${labels[state]}</span><small>${esc(messageKinds[m.kind]||m.kind)}</small></div><h2>${esc(m.title)}</h2><p>${esc(decodeReleaseNotes(m.body)?decodeReleaseNotes(m.body).zh+'\n\n'+decodeReleaseNotes(m.body).en:m.body)}</p><div class="item-meta">${time(m.starts_at)}<br>至 ${time(m.ends_at)}</div><div class="item-meta">${m.all_devices?'所有设备':`${m.target_ids.length} 台指定设备`}</div>${trash?`<p>删除于 ${time(m.deleted_at)}<br>到期清理：${time(new Date(Date.parse(m.deleted_at)+7*86400000).toISOString())}</p><button class="text-button" data-message-restore="${esc(m.id)}" ${ready&&Date.parse(m.deleted_at)+7*86400000>now?'':'disabled'}>恢复为已停止</button>`:`<div class="content-actions">${state==='active'?`<button class="text-button" data-message-push="${esc(m.id)}">立刻推送通知</button>`:''}${pushJobs.filter(j=>j.message_id===m.id).slice(0,3).map(j=>`<button class="text-button" data-push-job="${esc(j.id)}">查看推送任务 · ${time(j.created_at)}</button>`).join('')}<button class="text-button" data-message-edit="${esc(m.id)}" ${ready?'':'disabled'}>编辑</button>${m.enabled?`<button class="text-button" data-message-stop="${esc(m.id)}" ${ready?'':'disabled'}>停止投放</button>`:''}<button class="text-button danger-text" data-message-trash="${esc(m.id)}" ${ready?'':'disabled'}>删除</button></div>`}</article>`;
   }).join('')||'<section class="empty"><h2>没有匹配的消息</h2><p>可调整搜索词或分类；回收站中的消息保留七天。</p></section>';
 }
 export function messagePayload(form,targets){

@@ -1,3 +1,4 @@
+import {encodeReleaseNotes,decodeReleaseNotes} from './release-notes.js';
 import {pageOf,pagerHtml} from './pagination.js';
 import {createAutoRefresh} from './auto-refresh.js';
 import {audienceFields,bindAudiencePicker,messageTargets} from './message-audience.js';
@@ -7,6 +8,7 @@ import {messageKinds,messageStates,messageState,messageCards,messagePayload} fro
 import {accountFilters,accountMatches,accountSearchFields,accountList,accountActions,accountForm,accountActionData} from './accounts.js';
 import {authFlowType} from './recovery.js';
 import {campaignGrants,codeFields,codePayload,campaignCodesView,campaignCodeState} from './campaigns.js';
+import {validatePushMessage,pushJobHtml,pushErrors} from './push-management.js';
 import { createClient } from '@supabase/supabase-js';
 import { config } from './config.js';
 import { gatewayFetch } from './gateway-fetch.js';
@@ -32,6 +34,7 @@ let session, admin=false, section='devices', devices=[], entitlements=[], messag
 let authMode='login', authBusy=false, recovery=false;
 let sponsorOrders=[],feedbackItems=[],sponsorReady=false,messageReady=false;
 let campaignClaims=[],campaignCodes=[],campaignReady=false;
+let pushJobs=[];
 let accounts=[],accountSelected=new Set(),accountCursor=null,accountTotal=0,accountReady=false,accountBusy=false,accountError='',includeInstallations=false,accountLoadToken=0,registrationPolicy=null;
 let deviceQuery='',deviceFilter='all';
 const listStates=new Map();
@@ -87,10 +90,13 @@ async function load({canApply=()=>true,signal}={}){
  for(const result of extra)if(result.error&&!['PGRST205','42P01'].includes(result.error.code))throw result.error;
  const campaignData=await Promise.all(['lv_campaign_claims',...(admin?['lv_campaign_codes']:[])].map(table=>request(api.from(table).select('*').order('created_at',{ascending:false}).limit(1000))));
  for(const r of campaignData)if(r.error&&!['PGRST205','42P01'].includes(r.error.code))throw r.error;
+ const pushList=admin?await request(api.from('lv_push_jobs').select('id,message_id,created_at,canceled_at').order('created_at',{ascending:false}).limit(1000)):null;
+ if(pushList?.error&&!['PGRST205','42P01'].includes(pushList.error.code))throw pushList.error;
  // Commit a complete snapshot only while the initiating view/session is still current.
  if(!canApply())return false;
  [devices,entitlements,messages,campaigns,audit]=lists.map(r=>r.data);audit ||= [];
  campaignReady=campaignData.every(r=>!r.error);campaignClaims=campaignData[0]?.data||[];campaignCodes=campaignData[1]?.data||[];
+ pushJobs=pushList?.data||[];
  entitlements.push(...campaignGrants(campaigns,campaignClaims));
  devices=devices.map(d=>({...d,campaign_titles:entitlements.filter(g=>g.device_id===d.id&&g.campaign_id).map(g=>g.campaign_title)}));
  selected=new Set([...selected].filter(id=>devices.some(d=>d.id===id)));
@@ -139,9 +145,9 @@ function filtered(items,fields,category=()=>true){return searchItems(items.filte
 function messageView(){
  const state=listState();const list=filtered(messages,m=>[m.title,m.body,messageKinds[m.kind],m.all_devices?'所有设备':m.target_ids.map(id=>{const d=devices.find(d=>d.id===id);return d?deviceSearchFields(d).join(' '):id;}).join(' ')],
    (m,f)=>f==='trash'?!!m.deleted_at:!m.deleted_at&&(f==='all'||messageState(m)===f));
- return toolbar('消息与内容','编辑、停止或删除消息；删除后在回收站保留七天。',`<button class="primary" id="new-item">＋ 发布消息</button>`)+
+ return toolbar('消息与内容','编辑、立即推送或删除消息；删除后在回收站保留七天。',`<button class="secondary" id="new-urgent">＋ 紧急通知</button><button class="primary" id="new-item">＋ 发布消息</button>`)+
    listControls(messageStates,'搜索消息或接收设备')+(!messageReady?'<div class="sync-notice">消息编辑和七天回收站尚未部署，请完成 008_message_management.sql；旧消息仍可查看。</div>':'')+
-   `<div class="content-grid">${messageCards(list,{esc,time,ready:messageReady})}</div>`;
+   `<div class="content-grid">${messageCards(list,{esc,time,ready:messageReady,pushJobs})}</div>`;
 }
 function listView(type){
  if(type==='messages')return messageView();
@@ -290,15 +296,21 @@ function bindCampaignEvents(){
   },'确认兑换');
  });
 }
-function messageDialog(ids=[],existing=null){
+function messageDialog(ids=[],existing=null,urgent=false){
  if(existing&&existing.target_ids.some(id=>!devices.some(d=>d.id===id))){toast('部分接收设备尚未加载，请先刷新完整设备列表。');return;}
  const value=(key,fallback='')=>esc(existing?.[key]??fallback);
- const el=dialog(existing?'编辑消息':'发布消息',`${audienceFields(devices,ids,esc,{all:existing?existing.all_devices:ids.length===0,grants:entitlements})}<label>展示方式<select name="kind">${Object.entries(messageKinds).map(([k,label])=>`<option value="${k}" ${(existing?.kind||'dialog')===k?'selected':''}>${label}</option>`).join('')}</select></label><label>标题<input name="title" maxlength="120" value="${value('title')}" required></label><label>正文<textarea name="body" maxlength="4000" rows="4" required>${value('body')}</textarea></label><label>跳转地址（可选，仅 HTTPS）<input name="link" type="url" pattern="https://.*" value="${value('link')}"></label><label>目标 versionCode（更新提示填写）<input name="version" type="number" min="1" step="1" value="${value('version_code')}"></label>${dateField('start','开始时间',existing?.starts_at||Date.now())}${dateField('end','结束时间',existing?.ends_at||Date.now()+7*86400000)}${existing?`<label class="check"><input name="enabled" type="checkbox" ${existing.enabled?'checked':''}>启用投放（仍受起止时间限制）</label>`:''}<p>更改与删除会在设备下次成功同步后生效。已展示的系统通知不会远程撤回；已关闭的弹窗不会因为编辑而自动再次弹出。</p>`,async f=>{
+ const notes=decodeReleaseNotes(existing?.body||'');
+ const el=dialog(existing?'编辑消息':urgent?'发布并立刻推送紧急通知':'发布消息',`${audienceFields(devices,ids,esc,{all:existing?existing.all_devices:ids.length===0,grants:entitlements})}<label>展示方式<select name="kind">${Object.entries(messageKinds).map(([k,label])=>`<option value="${k}" ${(existing?.kind||(urgent?'notification':'dialog'))===k?'selected':''}>${label}</option>`).join('')}</select></label><label>标题<input name="title" maxlength="120" value="${value('title')}" required></label><div data-generic-body><label>正文<textarea name="body" maxlength="4000" rows="4">${value('body')}</textarea></label></div><div data-release-fields hidden><label>日志版本<input name="notes_version" maxlength="64" value="${esc(notes?.version||'')}"></label><label>中文更新日志<textarea name="notes_zh" rows="7">${esc(notes?.zh||'')}</textarea></label><label>English release notes<textarea name="notes_en" rows="7">${esc(notes?.en||'')}</textarea></label><p>新版 App 的关于 → 更新日志会自动读取此内容；标题不改变已安装的 App 版本。相同设备按开始时间选择最新有效日志。建议结束时间设得足够长，停止或删除后回退到内置日志。</p></div><label>跳转地址（可选，仅 HTTPS）<input name="link" type="url" pattern="https://.*" value="${value('link')}"></label><label>目标 versionCode（更新提示填写）<input name="version" type="number" min="1" step="1" value="${value('version_code')}"></label>${dateField('start','开始时间',existing?.starts_at||Date.now())}${dateField('end','结束时间',existing?.ends_at||Date.now()+(urgent?15*60000:7*86400000))}${existing?`<label class="check"><input name="enabled" type="checkbox" ${existing.enabled?'checked':''}>启用投放（仍受起止时间限制）</label>`:''}<p>更改与删除会在设备下次成功同步后生效。已展示的系统通知不会远程撤回；已关闭的弹窗不会因为编辑而自动再次弹出。</p>`,async f=>{
+   if(f.get('kind')==='changelog')f.set('body',encodeReleaseNotes(f.get('notes_version'),f.get('notes_zh'),f.get('notes_en')));
    const data=messagePayload(f,messageTargets(f,devices));
+   if(urgent){validatePushMessage({...data,enabled:true});const c=await pushRequest('configuration');if(!c.configured)throw Error(pushErrors.push_not_configured);}
    if(existing)await rpc('lv_message_manage',{p_action:'edit',p_id:existing.id,p_expected_version:existing.edit_version,p_data:{...data,enabled:f.has('enabled')}});
-   else await rpc('lv_publish',{p_type:'message',p_data:data});
+   else {const id=await rpc('lv_publish',{p_type:'message',p_data:data});if(urgent){await load();render();const m=messages.find(m=>m.id===id);if(m)openPushDialog(m,null,true);return;}}
    await load();render();toast(existing?'消息已保存。':'消息已发布。');
- },existing?'保存修改':'保存消息');
+ },existing?'保存修改':urgent?'保存并立刻推送':'保存消息');
+ const kind=el.querySelector('[name="kind"]');
+ const updateNotesFields=()=>{const notesMode=kind.value==='changelog';el.querySelector('[data-release-fields]').hidden=!notesMode;el.querySelector('[data-generic-body]').hidden=notesMode;for(const name of ['notes_version','notes_zh','notes_en'])el.querySelector(`[name="${name}"]`).required=notesMode;el.querySelector('[name="body"]').required=!notesMode;};
+ kind.addEventListener('change',updateNotesFields);updateNotesFields();
  bindAudiencePicker(el,{devices,grants:entitlements});
 }
 function bindListControls(){
@@ -306,7 +318,37 @@ function bindListControls(){
  if(input)input.oninput=()=>{const start=input.selectionStart,end=input.selectionEnd;listState().query=input.value;const x=window.scrollX,y=window.scrollY;render();const next=root.querySelector('#list-search');next?.focus({preventScroll:true});next?.setSelectionRange(start,end);window.scrollTo(x,y);};
  if(filter)filter.onchange=()=>{listState().filter=filter.value;render();};
 }
+async function pushRequest(action,data={}){
+ const {data:result,error}=await api.functions.invoke('cloud-sync',{body:{operation:'admin_push',action,...data}});
+ if(error){const details=await error.context?.json?.().catch(()=>null);throw Error(pushErrors[details?.error]||'推送接口不可用，请检查服务端部署；结果未确认时请查看原任务，不要重复创建。');}
+ return result;
+}
+function openPushDialog(message,existingJob=null,auto=false){
+ const jobId=existingJob||crypto.randomUUID();let submitted=!!existingJob,closed=false,busy=false,timer;
+ const el=dialog('立即推送通知',`<div data-push-status><p>立即提交到厂商通道。手机仍需已登记推送并允许通知；无法越过用户权限或保证送达。</p><p>同一消息一分钟内仅可创建一次任务。关闭此窗口后当前批次继续，剩余待发送项可打开原任务继续。</p></div><button type="button" data-push-cancel>取消待发送项</button>`,async()=>{},'关闭');
+ const box=el.querySelector('[data-push-status]');
+ const send=document.createElement('button');send.type='button';send.className='primary';send.textContent=submitted?'继续待发送项':'确认立刻推送';box.after(send);
+ const display=job=>{box.innerHTML=pushJobHtml(job,esc);send.disabled=job.canceled||!(job.counts?.queued);};
+ const run=async(action)=>{
+  if(busy||closed)return;busy=true;send.disabled=true;
+  try{
+   if(action==='send'){validatePushMessage(message);submitted=true;}
+   const result=await pushRequest(action,{job_id:jobId,...(action==='send'?{message_id:message.id,version:message.edit_version}:{})});
+   if(closed)return;display(result.job);send.textContent='继续待发送项';
+   clearTimeout(timer);
+   if(result.job.counts?.queued||result.job.counts?.sending)timer=setTimeout(()=>void run('status'),3000);
+  }catch(e){if(!closed){box.textContent=e.message;send.disabled=false;send.textContent=submitted?'核对原任务 / 继续':'确认立刻推送';}}
+  finally{busy=false;}
+ };
+ send.onclick=()=>void run(submitted?'continue':'send');
+ el.querySelector('[data-push-cancel]').onclick=()=>{if(submitted)void run('cancel');};
+ el.addEventListener('close',()=>{closed=true;clearTimeout(timer);void load().then(render).catch(()=>{});},{once:true});
+ if(existingJob)void run('status');else if(auto)void run('send');else void pushRequest('configuration').then(c=>{if(!closed&&!c.configured){box.textContent=pushErrors.push_not_configured;send.disabled=true;}}).catch(e=>{if(!closed){box.textContent=e.message;send.disabled=true;}});
+}
 function bindMessageManagement(){
+ document.querySelector('#new-urgent')?.addEventListener('click',()=>messageDialog([],null,true));
+ root.querySelectorAll('[data-message-push]').forEach(b=>b.onclick=()=>{const m=messages.find(m=>m.id===b.dataset.messagePush);if(m)openPushDialog(m);});
+ root.querySelectorAll('[data-push-job]').forEach(b=>b.onclick=()=>openPushDialog(null,b.dataset.pushJob));
  root.querySelectorAll('[data-message-edit]').forEach(b=>b.onclick=()=>{const m=messages.find(m=>m.id===b.dataset.messageEdit);if(m)messageDialog(m.target_ids,m);});
  for(const action of ['stop','trash','restore'])root.querySelectorAll(`[data-message-${action}]`).forEach(b=>b.onclick=()=>{
    const m=messages.find(m=>m.id===b.getAttribute(`data-message-${action}`));if(!m)return;

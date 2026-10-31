@@ -1,3 +1,4 @@
+import {decodeReleaseNotes} from './release-notes.js';
 // Member-only presentation. No device inventory, bulk actions, or management navigation.
 export function memberShell({content,email,section,esc}) {
   const tabs={devices:'我的设备',sponsor:'赞助支持',messages:'我的消息',feedback:'意见反馈',account:'账号设置'};
@@ -15,5 +16,5 @@ export function memberDevices({devices,entitlements,campaigns,time,esc}) {
 }
 export function memberMessages({messages,time,esc}) {
   const types={dialog:'公告',banner:'公告',notification:'通知',changelog:'更新日志',update:'版本更新'};
-  return `<header class="topbar"><div><h1>我的消息</h1><p>查看发给你的通知和更新内容。</p></div><button id="refresh" class="secondary">↻ 刷新</button></header><div class="member-message-list">${messages.length?messages.map(m=>`<article class="panel member-message"><div class="card-top"><span class="badge neutral">${esc(types[m.kind]||'消息')}</span><small>${time(m.starts_at)}</small></div><h2>${esc(m.title)}</h2><p>${esc(m.body)}</p>${m.link&&/^https:\/\//.test(m.link)?`<a class="secondary" target="_blank" rel="noopener noreferrer" href="${esc(m.link)}">${m.kind==='update'?'查看更新':'查看详情'} ↗</a>`:''}</article>`).join(''):'<section class="panel member-unbound"><h2>暂无消息</h2><p>发给当前设备的消息会显示在这里。</p></section>'}</div>`;
+  return `<header class="topbar"><div><h1>我的消息</h1><p>查看发给你的通知和更新内容。</p></div><button id="refresh" class="secondary">↻ 刷新</button></header><div class="member-message-list">${messages.length?messages.map(m=>`<article class="panel member-message"><div class="card-top"><span class="badge neutral">${esc(types[m.kind]||'消息')}</span><small>${time(m.starts_at)}</small></div><h2>${esc(m.title)}</h2><p>${esc(decodeReleaseNotes(m.body)?decodeReleaseNotes(m.body).zh+'\n\n'+decodeReleaseNotes(m.body).en:m.body)}</p>${m.link&&/^https:\/\//.test(m.link)?`<a class="secondary" target="_blank" rel="noopener noreferrer" href="${esc(m.link)}">${m.kind==='update'?'查看更新':'查看详情'} ↗</a>`:''}</article>`).join(''):'<section class="panel member-unbound"><h2>暂无消息</h2><p>发给当前设备的消息会显示在这里。</p></section>'}</div>`;
 }

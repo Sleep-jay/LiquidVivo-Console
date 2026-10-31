@@ -7,6 +7,105 @@ const decode=(s:string)=>Uint8Array.from(atob(s.replaceAll("-","+").replaceAll("
 const stamp=(s:string)=>new Date(s).toISOString().replace(/\.\d{3}Z$/,"Z");
 const canonical=(p:Record<string,unknown>)=>JSON.stringify(Object.fromEntries(Object.keys(p).sort().map(k=>[k,p[k]])));
 const headers={"Content-Type":"application/json","Cache-Control":"no-store"};
+const pushReply=(status:number,value:Record<string,unknown>)=>new Response(JSON.stringify(value),{status,headers});
+function pushSettings(){
+  const appId=Deno.env.get("LV_VIVO_APP_ID")?.trim(),appKey=Deno.env.get("LV_VIVO_APP_KEY")?.trim(),appSecret=Deno.env.get("LV_VIVO_APP_SECRET")?.trim();
+  return appId&&/^[1-9][0-9]{0,8}$/.test(appId)&&appKey&&appSecret?{appId:Number(appId),appKey,appSecret}:null;
+}
+let pushAuth:Promise<string>|undefined,pushAuthUntil=0;
+async function vivoPost(path:string,body:Record<string,unknown>,authToken?:string){
+  const response=await fetch("https://api-push.vivo.com.cn"+path,{method:"POST",redirect:"error",signal:AbortSignal.timeout(10000),
+    headers:{"Content-Type":"application/json",...(authToken?{authToken}:{})},body:JSON.stringify(body)});
+  if(!response.ok)throw Error("vendor_transport");
+  const text=await response.text();if(text.length>16384)throw Error("vendor_size");
+  const result=JSON.parse(text);if(!Number.isInteger(result.result))throw Error("vendor_response");return result;
+}
+async function vivoToken(){
+  const c=pushSettings();if(!c)throw Error("push_not_configured");
+  if(pushAuth&&Date.now()<pushAuthUntil)return pushAuth;
+  pushAuthUntil=Date.now()+30*60*1000;
+  pushAuth=(async()=>{
+    // Official legacy HTTPS /message/auth contract: MD5 is vendor authentication,
+    // independent of the Ed25519 signature protecting our notice contents.
+    const {createHash}=await import("node:crypto"),timestamp=Date.now();
+    const sign=createHash("md5").update(String(c.appId)+c.appKey+timestamp+c.appSecret).digest("hex");
+    const result=await vivoPost("/message/auth",{appId:c.appId,appKey:c.appKey,timestamp,sign});
+    if(result.result!==0||typeof result.authToken!=="string"||!result.authToken)throw Error("vendor_auth");return result.authToken;
+  })().catch(e=>{pushAuth=undefined;throw e;});return pushAuth;
+}
+const vendorLength=(s:string)=>Array.from(s).reduce((n,c)=>n+(c.codePointAt(0)!>127?c.length*2:1),0);
+async function pushPump(service:any,job:string){
+  const worker=crypto.randomUUID(),start=Date.now();
+  try{
+    const token=await vivoToken();
+    await service.rpc("lv_push_problem",{p_id:job,p_error:null});
+    for(let batch=0;batch<4&&Date.now()-start<25000;batch++){
+      const claimed=await service.rpc("lv_push_claim",{p_id:job,p_worker:worker});
+      if(claimed.error||!claimed.data?.length)break;
+      await Promise.all(claimed.data.map(async(item:any)=>{
+        let state="uncertain",code:number|null=null,task:string|null=null;
+        try{
+          if(!item.token||! /^LV2-[A-Z2-7]{51}[AQ]$/.test(item.device_code||"")){state="no_registration";}
+          else{
+            const end=Math.min(Date.parse(item.expires_at),Date.now()+15*60000),ttl=Math.floor((end-Date.now())/1000);
+            if(ttl<60){state="rejected";code=-2;}
+            else{
+              const full=JSON.parse(await envelope("LiquidVivo/cloud-push/v1\n",{kind:"push_notice_v1",format_version:1,product:"LiquidVivo",
+                key_id:JSON.parse(new TextDecoder().decode(decode(JSON.parse(Deno.env.get("LV_CLOUD_DELEGATION")!).payload))).key_id,
+                device_code:item.device_code,message_id:item.id,title:item.title,body:item.body,
+                issued_at:new Date().toISOString().replace(/\.\d{3}Z$/,"Z"),expires_at:new Date(end).toISOString().replace(/\.\d{3}Z$/,"Z")}));
+              // Client resolves the root-signed certificate from its last verified
+              // sync. The signed payload and signature are never truncated.
+              const custom={lv_notice:JSON.stringify({payload:full.payload,signature:full.signature})};
+              if(encoder.encode(JSON.stringify(custom)).length>1024){state="rejected";code=-3;}
+              else{
+                const result=await vivoPost("/message/send",{regId:item.token,notifyType:4,title:item.title,content:item.body,
+                  timeToLive:ttl,skipType:1,networkType:-1,clientCustomMap:custom,requestId:item.id},token);
+                code=result.result;
+                if(code===0&&typeof result.taskId==="string"){state="accepted";task=result.taskId;}
+                else state=code===10303?"uncertain":"rejected";
+                if(code===10000)pushAuth=undefined;
+              }
+            }
+          }
+        }catch{state="uncertain";}
+        // A timeout may have reached the provider; never resend uncertain rows.
+        await service.rpc("lv_push_finish",{p_id:item.id,p_worker:worker,p_state:state,p_code:code,p_task:task});
+      }));
+    }
+  }catch{await service.rpc("lv_push_problem",{p_id:job,p_error:"vendor_auth_or_connection_failed"});}
+  finally{await service.rpc("lv_push_release",{p_id:job,p_worker:worker});}
+}
+async function adminPush(request:Request,body:Record<string,any>){
+  const uuid=(x:unknown)=>typeof x==="string"&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x);
+  if(!["configuration","send","status","continue","cancel"].includes(body.action))return pushReply(400,{error:"invalid_push_action"});
+  const bearer=request.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_.-]+)$/)?.[1];if(!bearer)return pushReply(401,{error:"authentication"});
+  const service=createClient(Deno.env.get("SUPABASE_URL")!,Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,{auth:{persistSession:false,autoRefreshToken:false}});
+  const scoped=createClient(Deno.env.get("SUPABASE_URL")!,Deno.env.get("SUPABASE_ANON_KEY")!,{global:{headers:{Authorization:"Bearer "+bearer}},auth:{persistSession:false,autoRefreshToken:false}});
+  const user=await service.auth.getUser(bearer);if(user.error||!user.data.user)return pushReply(401,{error:"authentication"});
+  const ready=await scoped.rpc("lv_admin_session_ready");if(ready.error||ready.data!==true)return pushReply(403,{error:"administrator_confirmation_required"});
+  if(body.action==="configuration")return pushReply(200,{configured:!!pushSettings(),minimum_client:621});
+  if(!uuid(body.job_id))return pushReply(400,{error:"invalid_push_job"});
+  if(body.action==="send"){
+    if(!pushSettings())return pushReply(503,{error:"push_not_configured"});
+    if(!uuid(body.message_id)||!Number.isSafeInteger(body.version))return pushReply(400,{error:"invalid_push_message"});
+    const message=await scoped.from("lv_messages").select("title,body").eq("id",body.message_id).single();
+    if(message.error)return pushReply(409,{error:"message_unavailable"});
+    if(vendorLength(message.data.title)>40||vendorLength(message.data.body)>100)return pushReply(400,{error:"push_content_too_long"});
+    const begin=await scoped.rpc("lv_push_begin",{p_id:body.job_id,p_message:body.message_id,p_version:body.version});
+    if(begin.error)return pushReply(409,{error:"push_begin_rejected"});
+  }
+  const state=await scoped.rpc("lv_push_status",{p_id:body.job_id,p_cancel:body.action==="cancel"});
+  if(state.error)return pushReply(409,{error:"push_job_unavailable"});
+  if(["send","continue"].includes(body.action)&&state.data.counts.queued&&!state.data.canceled){
+    if(!pushSettings())return pushReply(503,{error:"push_not_configured"});
+    const work=pushPump(service,body.job_id);
+    // Server work continues after the HTTP response; the console can resume
+    // remaining queued rows after an instance interruption or its time budget.
+    if(typeof EdgeRuntime!=="undefined")EdgeRuntime.waitUntil(work);else await work;
+  }
+  return pushReply(200,{ok:true,job:state.data});
+}
 // Administrative actions share the fixed gateway route, but never the policy signing path.
 async function manageAccount(request:Request,body:Record<string,any>):Promise<Response>{
   const reply=(status:number,value:Record<string,unknown>)=>new Response(JSON.stringify(value),{status,headers});
@@ -105,6 +204,7 @@ Deno.serve(async(request:Request)=>{
     const buffer=new Uint8Array(size);let offset=0;for(const part of parts){buffer.set(part,offset);offset+=part.length;}
     const body=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(buffer));
     if(body.operation==="admin_accounts")return await manageAccount(request,body);
+    if(body.operation==="admin_push")return await adminPush(request,body);
     if(body.operation==="health") {
       if(typeof body.nonce!=="string"||! /^[0-9a-f]{32}$/.test(body.nonce))throw new Error("nonce");
       const proof=await envelope("LiquidVivo/cloud-health/v1\n",{kind:"health_v1",nonce:body.nonce,product:"LiquidVivo"});
@@ -138,6 +238,13 @@ Deno.serve(async(request:Request)=>{
         const resumed=await client.rpc("lv_cloud_resume",{p_actor:user.user.id,p_code:body.device_code,p_license_id:proof});
         if(!resumed.error&&resumed.data===true){const again=await client.rpc("lv_cloud_exchange",args);if(again.error)throw new Error("exchange");data=again.data;}
       }
+    }
+    if(!/^[0-9]{1,9}$/.test(body.version)||Number(body.version)<621){
+      data.messages=(data.messages||[]).map((m:any)=>{
+        if(m.kind!=="changelog")return m;
+        try{const n=JSON.parse(m.body);if(n.format==="lv_release_notes_v1")return {...m,body:n.zh+"\n\n"+n.en};}catch{}
+        return m;
+      });
     }
     let pushStatus="not_requested";
     if(push!==undefined){
