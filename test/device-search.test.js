@@ -1,0 +1,4 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {createHash} from 'node:crypto';
+import {normalizedDeviceCode,deviceQueryHash} from '../src/device-search.js';
+test('full LV1 and LV2 codes match the stored domain-separated device hash',async()=>{for(const version of [1,2]){const code=`LV${version}-`+'B'.repeat(51)+'A';const expected=createHash('sha256').update('LiquidVivo/console/device/v1\n'+code).digest('hex');assert.equal(await deviceQueryHash(code),expected);assert.equal(await deviceQueryHash('  '+code.toLowerCase()+'\n'),expected);assert.equal(await deviceQueryHash(code.replace('-','—')),expected);}});
+test('partial codes and ordinary search terms stay on text search',async()=>{for(const q of ['LV2-ABC','手机','', 'LV2-'+'B'.repeat(51)+'Z']){assert.equal(normalizedDeviceCode(q),null);assert.equal(await deviceQueryHash(q),null);}});

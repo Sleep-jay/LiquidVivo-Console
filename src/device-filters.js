@@ -12,7 +12,7 @@ export function matchesDeviceFilter(device,filter,grants,now=Date.now()){
     case 'blocked':return !!device.blocked;case 'unbound':return !device.owner_id;default:return false;
   }
 }
-export const deviceSearchFields=d=>[d.label,d.note,d.device_hash,d.id,d.app_version,...(d.campaign_titles||[]),d.blocked?'受限 黑名单 blocked':'正常',d.owner_id?'已绑定 bound':'未绑定 unbound'];
+export const deviceSearchFields=d=>[d.label,d.note,d.device_code,d.device_hash,d.id,d.app_version,...(d.campaign_titles||[]),d.blocked?'受限 黑名单 blocked':'正常',d.owner_id?'已绑定 bound':'未绑定 unbound'];
 export function deviceFilterOptions(value='all'){
   return Object.entries(deviceFilters).map(([key,label])=>`<option value="${key}" ${key===value?'selected':''}>${label}</option>`).join('');
 }
