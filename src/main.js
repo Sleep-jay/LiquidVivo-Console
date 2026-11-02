@@ -1,4 +1,4 @@
-import {deviceQueryHash} from './device-search.js';
+import {deviceQueryHash,linkedDeviceFields} from './device-search.js';
 import {encodeReleaseNotes,decodeReleaseNotes} from './release-notes.js';
 import {pageOf,pagerHtml} from './pagination.js';
 import {createAutoRefresh} from './auto-refresh.js';
@@ -142,7 +142,13 @@ function deviceView(){const all=admin?`<button class="primary" id="add-device">�
 function listControls(options={all:'全部'},label='搜索内容'){
  const state=listState();return `<section class="panel list-tools"><label class="search"><span>⌕</span><input id="list-search" value="${esc(state.query)}" placeholder="${esc(label)} · 支持拼音、近音和模糊匹配" aria-label="${esc(label)}"></label><select id="list-filter" aria-label="列表分类">${Object.entries(options).map(([key,title])=>`<option value="${key}" ${state.filter===key?'selected':''}>${esc(title)}</option>`).join('')}</select></section>`;
 }
-function filtered(items,fields,category=()=>true){return searchItems(items.filter(item=>category(item,listState().filter)),listState().query,fields);}
+const listQueryHashes=new Map();
+function filtered(items,fields,category=()=>true){
+ const query=listState().query,hash=listQueryHashes.get(query);
+ const values=item=>[...fields(item),...linkedDeviceFields(item,{devices,claims:campaignClaims,section})];
+ const candidates=items.filter(item=>category(item,listState().filter));
+ return hash?candidates.filter(item=>values(item).includes(hash)):searchItems(candidates,query,values);
+}
 function messageView(){
  const state=listState();const list=filtered(messages,m=>[m.title,m.body,messageKinds[m.kind],m.all_devices?'所有设备':m.target_ids.map(id=>{const d=devices.find(d=>d.id===id);return d?deviceSearchFields(d).join(' '):id;}).join(' ')],
    (m,f)=>f==='trash'?!!m.deleted_at:!m.deleted_at&&(f==='all'||messageState(m)===f));
@@ -316,7 +322,9 @@ function messageDialog(ids=[],existing=null,urgent=false){
 }
 function bindListControls(){
  const input=root.querySelector('#list-search'),filter=root.querySelector('#list-filter');
- if(input)input.oninput=()=>{const start=input.selectionStart,end=input.selectionEnd;listState().query=input.value;const x=window.scrollX,y=window.scrollY;render();const next=root.querySelector('#list-search');next?.focus({preventScroll:true});next?.setSelectionRange(start,end);window.scrollTo(x,y);};
+ if(input)input.oninput=async()=>{const start=input.selectionStart,end=input.selectionEnd,query=input.value,currentSection=section;listState().query=query;const x=window.scrollX,y=window.scrollY;
+ const repaint=()=>{render();const next=root.querySelector('#list-search');next?.focus({preventScroll:true});next?.setSelectionRange(start,end);window.scrollTo(x,y);};repaint();
+ try{const hash=await deviceQueryHash(query);if(hash){if(listQueryHashes.size>=100)listQueryHashes.clear();listQueryHashes.set(query,hash);if(section===currentSection&&listState().query===query)repaint();}}catch{toast('设备码查询失败，请重新粘贴。');}};
  if(filter)filter.onchange=()=>{listState().filter=filter.value;render();};
 }
 async function pushRequest(action,data={}){
