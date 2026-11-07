@@ -275,8 +275,9 @@ function campaignDialog(existing=null){
  },'保存活动');
  if(existing)el.querySelectorAll('[name="feature"]').forEach(b=>b.checked=existing.features.includes(b.value));
 }
-function codeDialog(campaign,code=null){
+async function codeDialog(campaign,code=null){
  if(!campaignReady){toast('兑换接口尚未部署。');return;}
+ try{if(!await rpc('lv_campaign_trials_ready'))throw Error('not ready');}catch{toast('体验时长与账号次数接口尚未就绪，请管理员先执行 014_campaign_trials.sql。');return;}
  const el=dialog(code?'编辑兑换码':'创建兑换码',codeFields(code,campaign,esc,localDate),async f=>{
   const data=codePayload(f);if(!data.validity_seconds&&Date.parse(data.expires_at)<=Date.parse(campaign.starts_at))throw Error('兑换截止时间须晚于活动开始时间。');
   await rpc('lv_campaign_code_save',{p_id:code?.id||null,p_campaign:campaign.id,p_data:data,p_version:code?.edit_version||null});await load();render();toast('兑换码已保存。');
@@ -308,8 +309,9 @@ function bindCampaignEvents(){
   root.querySelectorAll('[data-campaign-members]').forEach(b=>b.onclick=()=>{const ids=campaignClaims.filter(m=>m.campaign_id===b.dataset.campaignMembers).map(m=>m.device_id);if(!ids.length){toast('此活动尚无兑换设备。');return;}deviceCampaignDialog(ids,b.dataset.campaignMembers);});
  }else document.querySelector('#redeem-campaign')?.addEventListener('click',()=>{
   if(!devices.length){toast('请先绑定你的设备。');return;}if(!campaignReady){toast('兑换功能暂不可用，请稍后重试。');return;}
+  const requestId=crypto.randomUUID();
   dialog('兑换限免活动',`<label>绑定设备<select name="device">${devices.filter(d=>!d.blocked).map(d=>`<option value="${d.id}">${esc(d.label||'我的设备')}</option>`).join('')}</select></label><label>兑换码<input name="code" minlength="4" maxlength="64" autocomplete="off" required></label><p>兑换码仅用于领取对应活动的限时权益，不会替换永久赞助。</p>`,async f=>{
-   const r=await rpc('lv_campaign_redeem',{p_code:f.get('code'),p_device:f.get('device')});if(!r.ok)throw Error(r.error==='device_limit'?'此设备已达到该兑换码的使用次数上限。':r.error==='rate_limited'?'兑换尝试过于频繁，一小时后再试。':'兑换码不可用、活动未开始或已结束，请核对后再试。');await load();render();toast(`${r.duplicate?'此设备已领取':'兑换成功'}：${r.title}。App 下次成功同步后生效。`);
+   const r=await rpc('lv_campaign_redeem',{p_code:f.get('code'),p_device:f.get('device'),p_request:requestId});if(!r.ok)throw Error(r.error==='account_limit'?'此账号已达到该活动的领取次数上限。':r.error==='already_active'?'此账号或设备已有尚未到期的活动体验，不能重复叠加领取。':r.error==='device_limit'?'此设备已达到该兑换码的使用次数上限。':r.error==='rate_limited'?'兑换尝试过于频繁，一小时后再试。':'兑换码不可用、活动未开始或已结束，请核对后再试。');await load();render();toast(`${r.duplicate?'此设备已领取':'兑换成功'}：${r.title}${r.ends_at?'，体验到期：'+time(r.ends_at):''}。App 下次成功同步后生效。`);
   },'确认兑换');
  });
 }
