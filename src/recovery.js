@@ -18,3 +18,34 @@ export async function resetWithCode(auth,email,code,password,confirmation){
  if(!verified.data?.session||verified.data.user?.email?.toLowerCase()!==email.trim().toLowerCase())throw Error('未能确认重置账号，请重新申请。');
  const updated=await auth.updateUser({password});if(updated.error)throw updated.error;
 }
+
+export function normalizedAuthEmail(value){
+ const email=String(value||'').trim().toLowerCase();
+ if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))throw Error('请填写完整、正确的注册邮箱。');
+ return email;
+}
+export function createRecoveryMailer({auth,diagnose=async()=>'',now=Date.now}){
+ const sent=new Map();let busy=false;
+ return {
+ remaining(email){const at=sent.get(String(email||'').trim().toLowerCase());return at===undefined?0:Math.max(0,Math.ceil((at+60000-now())/1000));},
+ async send(value,redirectTo){
+  const email=normalizedAuthEmail(value);
+  if(busy)throw Error('正在提交重置邮件请求，请稍候。');
+  if(this.remaining(email)>0)throw Error(`请等待 ${this.remaining(email)} 秒后再发送重置验证码。`);
+  busy=true;
+  try{
+   const {error}=await auth.resetPasswordForEmail(email,{redirectTo});
+   if(error){
+    if(error.status===429||/rate.limit/i.test(error.message||''))throw Error('重置邮件请求过于频繁，请等待一分钟；持续出现时请联系管理员检查项目发信额度。');
+    if(/email_address_not_authorized/.test(error.code||''))throw Error('当前邮件服务不允许向此地址发送，请联系管理员检查 SMTP 配置。');
+    if(error.status>=500||/smtp|sending.*email/i.test(error.message||''))throw Error('邮件服务暂未完成发送，请稍后重试；持续失败请联系管理员检查发信日志。');
+    throw error;
+   }
+   sent.set(email,now());
+  }catch(error){
+   if(/fetch|network|timeout|load failed/i.test(String(error.message||error))){let detail='';try{detail=await diagnose();}catch{}throw Error('重置邮件请求未能确认成功，请检查网络后重试。'+(detail?' '+detail:''));}
+   throw error;
+  }finally{busy=false;}
+ }
+ };
+}
