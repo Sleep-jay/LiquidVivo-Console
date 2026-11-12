@@ -169,6 +169,37 @@ async function envelope(domain:string,p:Record<string,unknown>){
   return JSON.stringify({payload:b64(encoder.encode(payload)),signature:await sign(domain,payload),
     delegation:b64(encoder.encode(Deno.env.get("LV_CLOUD_DELEGATION")??""))});
 }
+
+async function sponsorFeatureLease(request:Request, body:Record<string,unknown>):Promise<Response>{
+  const {feature, nonce}=body;
+  if((feature!=="notification_island"&&feature!=="status_bar")||
+    typeof nonce!=="string"||!/^[0-9a-f]{32}$/.test(nonce))return pushReply(400,{error:"invalid_lease_request"});
+  const token=request.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_.-]+)$/)?.[1];
+  if(!token)return pushReply(401,{error:"authentication"});
+  const scoped=createClient(Deno.env.get("SUPABASE_URL")!,Deno.env.get("SUPABASE_ANON_KEY")!,{
+    global:{headers:{Authorization:"Bearer "+token}},auth:{persistSession:false,autoRefreshToken:false}
+  });
+  const {data:identity,error:authError}=await scoped.auth.getUser(token);
+  if(authError||!identity?.user)return pushReply(401,{error:"authentication"});
+  if(identity.user.is_anonymous!==false||!identity.user.email_confirmed_at)
+    return pushReply(403,{error:"verified_account_required"});
+  const {data:deadline,error}=await scoped.rpc("lv_sponsor_feature_deadline",{p_feature:feature});
+  if(error)throw new Error("lease_deadline");
+  if(deadline===null)return pushReply(403,{error:"feature_unavailable"});
+  const now=Date.now();
+  const end=typeof deadline==="string"?Date.parse(deadline):NaN;
+  if(!Number.isFinite(end))throw new Error("lease_deadline");
+  const expires=stamp(new Date(Math.min(end,now+600_000)).toISOString());
+  const issued=stamp(new Date(now).toISOString());
+  if(expires<=issued)return pushReply(403,{error:"feature_unavailable"});
+  const certificate=JSON.parse(Deno.env.get("LV_CLOUD_DELEGATION")??"");
+  const authority=JSON.parse(new TextDecoder().decode(decode(certificate.payload)));
+  const packet=await envelope("LiquidVivo/sponsor-feature-lease/v1\n",{
+    kind:"sponsor_feature_lease_v1",format_version:1,product:"LiquidVivo",key_id:authority.key_id,
+    account_id:identity.user.id,feature,nonce,issued_at:issued,expires_at:expires
+  });
+  return new Response(packet,{status:200,headers});
+}
 async function proofLicense(text:unknown,code:string,legacy:string):Promise<string|null>{
   try{
     if(typeof text!=="string"||text.length>16384)return null;
@@ -238,6 +269,7 @@ Deno.serve(async(request:Request)=>{
     while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>32768){await reader.cancel();throw new Error("size");}parts.push(value);}
     const buffer=new Uint8Array(size);let offset=0;for(const part of parts){buffer.set(part,offset);offset+=part.length;}
     const body=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(buffer));
+    if(body.operation==="sponsor_feature_lease")return await sponsorFeatureLease(request,body);
     if(body.operation==="legacy_sponsor_claim")return await legacySponsorClaim(request,body.license_proof,body.pairing_token);
     if(body.operation==="admin_accounts")return await manageAccount(request,body);
     if(body.operation==="admin_push")return await adminPush(request,body);

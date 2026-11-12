@@ -16,24 +16,26 @@ const certPayload=canonical({algorithm:'Ed25519',format_version:1,issuer_key_id:
 const cert=JSON.stringify({payload:b64(certPayload),signature:b64(sign(null,Buffer.from('LiquidVivo/cloud-delegation/v1\n'+certPayload),root.privateKey))});
 const env={LV_CLOUD_PKCS8:b64(child.privateKey.export({format:'der',type:'pkcs8'})),LV_CLOUD_DELEGATION:cert,
  LV_ROOT_KEYS:JSON.stringify({'test-only-root':b64(root.publicKey.export({format:'der',type:'spki'}).subarray(-32))}),
- SUPABASE_URL:'https://fixture.invalid',SUPABASE_SERVICE_ROLE_KEY:'test-only'};
+ SUPABASE_URL:'https://fixture.invalid',SUPABASE_SERVICE_ROLE_KEY:'test-only',SUPABASE_ANON_KEY:'test-only-public'};
 const code='LV2-'+'A'.repeat(52),nonce='0123456789abcdef0123456789abcdef';
 function fixture(exchange={},pushResult={data:"registered",error:null}){
  let handler,calls=0,resumes=0;const pushCalls=[];
  const data={revision:'10',device_code:code,blocked:false,sponsor_revoked:false,bound:true,installation_authorized:true,
   revoked_license_ids:[],pairing_token:'',legacy_licenses:[],messages:[],grants:[{
    id:'b8c65347-ae5f-482d-a505-5ac8add32cd5',features:['status_bar','notification_island'],starts_at:'2026-01-01T00:00:00+00:00',ends_at:null}],...exchange};
- const claims=[];
+ const claims=[],leaseQueries=[],clientKeys=[];
  const client={auth:{getUser:async token=>token==='valid-jwt'?{data:{user:{id:'test-user',is_anonymous:exchange.anonymous??false,email_confirmed_at:'2026-01-01T00:00:00Z'}}}:{data:{user:null},error:'bad-token'}},
-  rpc:async(name,args)=>{if(name==='lv_user_session_active')return {data:exchange.session_active!==false,error:null};calls++;assert.equal(args.p_actor,'test-user');
+  rpc:async(name,args)=>{
+   if(name==='lv_sponsor_feature_deadline'){leaseQueries.push(args);return {data:exchange.deadline??null,error:exchange.deadline_error??null};}
+   if(name==='lv_user_session_active')return {data:exchange.session_active!==false,error:null};calls++;assert.equal(args.p_actor,'test-user');
    if(name==='lv_cloud_push_registration'){pushCalls.push(args);return pushResult;}
    if(name==='lv_claim_legacy_sponsor'){claims.push(args);return {data:exchange.claim_allowed!==false,error:null};}
    if(name==='lv_cloud_resume'){resumes++;const ok=!data.blocked&&!data.sponsor_revoked&&!data.revoked_license_ids.includes(args.p_license_id);if(ok)data.installation_authorized=true;return {data:ok,error:null};}
    assert.equal(name,'lv_cloud_exchange');return {data,error:null};}};
- new Function('Deno','createClient',js)({env:{get:n=>env[n]},serve:h=>handler=h},()=>client);
+ new Function('Deno','createClient',js)({env:{get:n=>env[n]},serve:h=>handler=h},(_url,key)=>{clientKeys.push(key);return client;});
  const request=(body={},token='valid-jwt')=>handler(new Request('https://fixture.invalid/cloud-sync',{
   method:'POST',headers:token?{authorization:'Bearer '+token}:{},body:JSON.stringify({device_code:code,legacy_code:'',version:'603',label:'Test phone',nonce,receipts:[],...body})}));
- return {request,calls:()=>calls,resumes:()=>resumes,pushCalls,claims};
+ return {request,calls:()=>calls,resumes:()=>resumes,pushCalls,claims,leaseQueries,clientKeys};
 }
 function proof(){
  const p={algorithm:'Ed25519',format_version:1,device_binding_version:2,device_code:code,expires_at:null,
@@ -64,6 +66,43 @@ test('health challenge verifies actual signer without creating a fake device',as
  const f=fixture(),r=await f.request({operation:'health'},null);assert.equal(r.status,200);
  assert.deepEqual(payload(await r.text(),'LiquidVivo/cloud-health/v1\n'),{kind:'health_v1',nonce,product:'LiquidVivo'});
  assert.equal(f.calls(),0);
+});
+
+test('feature lease is account-scoped, nonce-bound and capped at ten minutes',async()=>{
+ const f=fixture({deadline:new Date(Date.now()+86_400_000).toISOString()});
+ const r=await f.request({operation:'sponsor_feature_lease',feature:'status_bar',device_code:null,account_id:'ignored'});
+ assert.equal(r.status,200);
+ const p=payload(await r.text(),'LiquidVivo/sponsor-feature-lease/v1\n');
+ assert.equal(p.kind,'sponsor_feature_lease_v1');
+ assert.equal(p.account_id,'test-user');
+ assert.equal(p.feature,'status_bar');
+ assert.equal(p.nonce,nonce);
+ assert.equal('device_code' in p,false);
+ assert.equal(Date.parse(p.expires_at)-Date.parse(p.issued_at),600_000);
+ assert.deepEqual(f.leaseQueries,[{p_feature:'status_bar'}]);
+ assert.deepEqual(f.clientKeys,['test-only-public']);
+ assert.equal(f.calls(),0);
+});
+
+test('feature lease honors server expiry and refuses missing, stale and invalid grants',async()=>{
+ const input={operation:'sponsor_feature_lease',feature:'notification_island'};
+ const deadline=new Date(Date.now()+120_000).toISOString().replace(/\.\d{3}Z$/,'Z');
+ const granted=await fixture({deadline}).request(input);
+ assert.equal(payload(await granted.text(),'LiquidVivo/sponsor-feature-lease/v1\n').expires_at,deadline);
+ assert.equal((await fixture().request({...input,license_proof:proof()})).status,403);
+ assert.equal((await fixture({deadline:'2000-01-01T00:00:00Z'}).request(input)).status,403);
+ assert.equal((await fixture({deadline_error:'db-error'}).request(input)).status,503);
+});
+
+test('feature lease rejects anonymous sessions, absent credentials and unknown features before a grant lookup',async()=>{
+ const input={operation:'sponsor_feature_lease',feature:'status_bar'};
+ const f=fixture({anonymous:true});
+ assert.equal((await f.request(input)).status,403);
+ assert.equal((await f.request(input,null)).status,401);
+ assert.equal((await f.request(input,'bad-jwt')).status,401);
+ assert.equal((await f.request({...input,feature:'unknown'})).status,400);
+ assert.equal((await f.request({...input,nonce:'bad'})).status,400);
+ assert.deepEqual(f.leaseQueries,[]);
 });
 
 test('legacy migration verifies a root signature, confirmed session and separate admin pairing before database claim',async()=>{

@@ -24,6 +24,15 @@ test('expired trial cannot hide valid permanent entitlement',()=>{
   {device_id:'one',features:['status_bar'],starts_at:'2000-01-01',ends_at:'2001-01-01'}],campaigns:[]});
  assert.match(html,/通知上岛/);assert.match(html,/永久/);assert.ok(!html.includes('状态栏定制'));
 });
+test('account sponsorship remains visible with no bound device',()=>{
+ const html=memberDevices({...base,devices:[],entitlements:[
+  {account_id:'private-account',device_id:'old-phone',features:['status_bar'],starts_at:'2000-01-01',ends_at:null}
+ ],campaigns:[]});
+ assert.match(html,/账号赞助权益/);
+ assert.match(html,/状态栏定制/);
+ assert.match(html,/绑定我的设备/);
+ assert.doesNotMatch(html,/private-account|old-phone/);
+});
 test('messages escape active markup and exclude non-HTTPS links',()=>{
  const html=memberMessages({...base,messages:[{kind:'dialog',title:'<img src=x onerror=alert(1)>',body:'<script>bad()</script>',link:'javascript:alert(1)'}]});
  assert.ok(!html.includes('<script>'));assert.ok(!html.includes('<img'));assert.ok(!html.includes('href="javascript:'));

@@ -156,7 +156,7 @@ async function refreshWorkspace(){
 }
 const autoRefresh=createAutoRefresh({refresh:refreshWorkspace,canRefresh:canAutoRefresh,document,window});
 
-function activeGrants(d){return entitlements.filter(e=>e.device_id===d.id&&!e.revoked_at&&new Date(e.starts_at)<=new Date()&&(!e.ends_at||new Date(e.ends_at)>new Date()));}
+function activeGrants(d){return entitlements.filter(e=>(e.account_id?e.account_id===d.owner_id:e.device_id===d.id)&&!e.revoked_at&&new Date(e.starts_at)<=new Date()&&(!e.ends_at||new Date(e.ends_at)>new Date()));}
 function status(d){if(d.blocked)return ['danger','已拉黑'];const grants=activeGrants(d);if(grants.some(e=>!e.ends_at))return ['green','永久权益'];if(grants.length)return ['blue','限时权益'];return ['neutral','无云端权益'];}
 function badge(d){const [style,text]=status(d);return `<span class="badge ${style}">${text}</span>`;}
 function toolbar(title,desc,action=''){return `<header class="topbar"><div><span class="eyebrow">LIQUIDVIVO / ${admin?'CONTROL ROOM':'MEMBER SPACE'}</span><h1>${title}</h1><p>${desc}</p></div><div class="top-actions"><button id="refresh" class="secondary">↻ 刷新</button>${action}</div></header>`;}
@@ -403,7 +403,7 @@ function bindSupportEvents(){
  });
  document.querySelector('#submit-sponsorship')?.addEventListener('click',()=>{
   const requestId=crypto.randomUUID();
-  dialog('提交已付款赞助申请',`<p>最低 15 元，永久权益绑定下方设备。请从你自己的支付账单复制订单号，提交后由管理员核对到账。</p><label>绑定设备<select name="device">${devices.filter(d=>!d.blocked).map(d=>`<option value="${d.id}">${esc(d.label||d.id)}</option>`).join('')}</select></label><label>支付方式<select name="provider"><option value="wechat">微信</option><option value="alipay">支付宝</option></select></label><label>实际支付金额（元）<input name="amount" inputmode="decimal" value="15.00" required></label><label>支付订单号<input name="ref" autocomplete="off" spellcheck="false" minlength="8" maxlength="128" pattern="[A-Za-z0-9_-]{8,128}" required></label><p>请勿粘贴密码、验证码或完整账单。提交不代表支付已确认。</p>`,async f=>{await rpc('lv_submit_sponsorship',{p_request_id:requestId,p_device_id:f.get('device'),p_provider:f.get('provider'),p_ref:f.get('ref').trim(),p_cents:yuanToCents(f.get('amount'))});await load();render();toast('申请已提交，等待管理员核对到账。');},'提交待核对申请');
+  dialog('提交已付款赞助申请',`<p>最低 15 元，永久权益发放到当前账号。请从你自己的支付账单复制订单号，提交后由管理员核对到账。</p><label>绑定设备<select name="device">${devices.filter(d=>!d.blocked).map(d=>`<option value="${d.id}">${esc(d.label||d.id)}</option>`).join('')}</select></label><label>支付方式<select name="provider"><option value="wechat">微信</option><option value="alipay">支付宝</option></select></label><label>实际支付金额（元）<input name="amount" inputmode="decimal" value="15.00" required></label><label>支付订单号<input name="ref" autocomplete="off" spellcheck="false" minlength="8" maxlength="128" pattern="[A-Za-z0-9_-]{8,128}" required></label><p>请勿粘贴密码、验证码或完整账单。提交不代表支付已确认。</p>`,async f=>{await rpc('lv_submit_sponsorship',{p_request_id:requestId,p_device_id:f.get('device'),p_provider:f.get('provider'),p_ref:f.get('ref').trim(),p_cents:yuanToCents(f.get('amount'))});await load();render();toast('申请已提交，等待管理员核对到账。');},'提交待核对申请');
  });
  root.querySelectorAll('[data-review]').forEach(b=>b.onclick=()=>{
   if(!admin)return;const o=sponsorOrders.find(x=>x.id===b.dataset.review);if(!o)return;
@@ -420,7 +420,7 @@ function issueLegacySponsorPairing(deviceId){
  },'签发');
 }
 
-function openMemberBind(){dialog('绑定我的设备',`<label>完整设备码<input name="code" autocomplete="off" required></label><label>一次性配对凭证<input name="token" autocomplete="off" minlength="32" maxlength="32" required></label><p>打开新版 App 的赞助中心，点击立即同步，复制设备码和配对码。配对码 15 分钟有效；重装后也可用此入口连接已有设备。</p>`,async f=>{await rpc('lv_bind_device',{p_hash:await hashDevice(f.get('code').trim()),p_token:f.get('token').trim()});await load();render();toast('设备绑定成功');},'确认绑定');}
+function openMemberBind(){dialog('绑定我的设备',`<label>完整设备码<input name="code" autocomplete="off" required></label><label>一次性配对凭证<input name="token" autocomplete="off" minlength="32" maxlength="32" required></label><p>打开新版 App 的赞助中心，点击立即同步，复制设备码和配对码。配对码 15 分钟有效。绑定新手机后将解除旧手机的绑定，账号赞助权益会保留。</p>`,async f=>{await rpc('lv_bind_device',{p_hash:await hashDevice(f.get('code').trim()),p_token:f.get('token').trim()});await load();render();toast('设备绑定成功');},'确认绑定');}
 
 function openLegacySponsorClaim(){
  dialog('迁移旧赞助',`<label>原离线授权文件<input name="license" type="file" accept=".json,application/json" required></label><label>管理员提供的迁移配对码<input name="pairing" autocomplete="off" pattern="[0-9a-f]{32}" required></label><p>选择原离线授权 JSON 文件，并填写核对后由管理员提供的一次性配对码。</p>`,async form=>{
