@@ -193,6 +193,41 @@ async function proofLicense(text:unknown,code:string,legacy:string):Promise<stri
     return await crypto.subtle.verify("Ed25519",key,decode(e.signature),encoder.encode("LiquidVivo/license/v1\n"+new TextDecoder().decode(raw)))?p.license_id:null;
   }catch{return null;}
 }
+
+async function legacySponsorClaim(request:Request, text:unknown, pairing:unknown):Promise<Response>{
+  const reply=(status:number,value:Record<string,unknown>)=>new Response(JSON.stringify(value),{status,headers});
+  const token=request.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_.-]+)$/)?.[1];
+  if(!token)return reply(401,{error:"authentication"});
+  const url=Deno.env.get("SUPABASE_URL")!;
+  const auth={persistSession:false,autoRefreshToken:false};
+  const client=createClient(url,Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,{auth});
+  const {data,error}=await client.auth.getUser(token);
+  const user=data?.user;
+  if(error||!user||user.is_anonymous!==false||!user.email_confirmed_at)return reply(403,{error:"verified_account_required"});
+  const scoped=createClient(url,Deno.env.get("SUPABASE_ANON_KEY")!,{global:{headers:{Authorization:"Bearer "+token}},auth});
+  const active=await scoped.rpc("lv_user_session_active");
+  if(active.error)throw new Error("session_check");
+  if(active.data!==true)return reply(401,{error:"session_inactive"});
+
+  // Treat the signed file as a migration credential, never accept a typed device code as proof.
+  let id:string|null=null;
+  if(typeof text==="string"&&text.length<=16384){
+    try{
+      const signed=JSON.parse(text);
+      const license=JSON.parse(new TextDecoder().decode(decode(signed.payload)));
+      if(!Object.hasOwn(signed,"delegation")&&typeof license.device_code==="string"&&
+        /^LV[12]-[A-Z2-7]{51}[AQ]$/.test(license.device_code)){
+        id=await proofLicense(text,license.device_binding_version===2?license.device_code:"",
+          license.device_binding_version===1?license.device_code:"");
+      }
+    }catch{ /* Return the same denial for all invalid legacy credentials. */ }
+  }
+  if(!id||! /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id))return reply(403,{error:"legacy_claim_denied"});
+  if(typeof pairing!=="string"||!/^[0-9a-f]{32}$/.test(pairing))return reply(403,{error:"legacy_claim_denied"});
+  const claim=await client.rpc("lv_claim_legacy_sponsor",{p_actor:user.id,p_license_id:id,p_pairing_token:pairing});
+  if(claim.error)throw new Error("legacy_claim");
+  return claim.data===true?reply(200,{claimed:true}):reply(403,{error:"legacy_claim_denied"});
+}
 Deno.serve(async(request:Request)=>{
   if(request.method!=="POST")return new Response('{"error":"method"}',{status:405,headers});
   try{
@@ -203,6 +238,7 @@ Deno.serve(async(request:Request)=>{
     while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>32768){await reader.cancel();throw new Error("size");}parts.push(value);}
     const buffer=new Uint8Array(size);let offset=0;for(const part of parts){buffer.set(part,offset);offset+=part.length;}
     const body=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(buffer));
+    if(body.operation==="legacy_sponsor_claim")return await legacySponsorClaim(request,body.license_proof,body.pairing_token);
     if(body.operation==="admin_accounts")return await manageAccount(request,body);
     if(body.operation==="admin_push")return await adminPush(request,body);
     if(body.operation==="health") {
