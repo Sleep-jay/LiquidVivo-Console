@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {memberShell,memberDevices,memberMessages} from '../src/member.js';
+import {memberShell,memberDevices,memberMessages,personalAccountData} from '../src/member.js';
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const base={esc,time:v=>v||'尚未联系'};
 test('member navigation excludes administrative sections',()=>{
@@ -37,4 +37,22 @@ test('messages escape active markup and exclude non-HTTPS links',()=>{
  const html=memberMessages({...base,messages:[{kind:'dialog',title:'<img src=x onerror=alert(1)>',body:'<script>bad()</script>',link:'javascript:alert(1)'}]});
  assert.ok(!html.includes('<script>'));assert.ok(!html.includes('<img'));assert.ok(!html.includes('href="javascript:'));
  assert.match(html,/&lt;script&gt;/);assert.ok(!html.includes('停止投放'));
+});
+
+test('administrator personal account excludes other accounts and preserves own grants without a device',()=>{
+ const snapshot=personalAccountData({userId:'self',devices:[{id:'own',owner_id:'self'},{id:'other',owner_id:'someone'}],entitlements:[
+  {id:'account-grant',account_id:'self',device_id:'old'},
+  {id:'legacy-grant',device_id:'own'},
+  {id:'foreign-grant',account_id:'someone',device_id:'own'},
+  {id:'foreign-legacy',device_id:'other'}
+ ]});
+ assert.deepEqual(snapshot.devices.map(d=>d.id),['own']);
+ assert.deepEqual(snapshot.entitlements.map(e=>e.id),['account-grant','legacy-grant']);
+ assert.equal(personalAccountData({userId:'self',devices:[],entitlements:[{account_id:'self'}]}).entitlements.length,1);
+});
+test('embedded administrator device panel has working bind and migration hooks with no duplicate refresh',()=>{
+ const html=memberDevices({...base,devices:[],entitlements:[],campaigns:[],embedded:true});
+ assert.match(html,/id="bind-device"/);assert.match(html,/data-claim-legacy/);
+ assert.match(html,/当前账号暂无有效赞助权益/);
+ assert.doesNotMatch(html,/id="refresh"|id="redeem-campaign"/);
 });

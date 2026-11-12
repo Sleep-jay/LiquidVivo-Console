@@ -35,3 +35,10 @@ test('only complete server recovery callbacks select implicit validation; normal
  assert.equal(authFlowType('#type=recovery&access_token=test&refresh_token=test'),'implicit');
  for(const hash of ['', '#type=recovery', '#type=signup&access_token=test&refresh_token=test', '#code=pkce-code'])assert.equal(authFlowType(hash),'pkce');
 });
+
+test('administrator can open their own device settings while other administrator accounts stay protected',()=>{
+ const html=accountList({users:[{...user,is_admin:true},{...user,id:'other-admin',is_admin:true}],currentUserId:user.id,selected:new Set(),esc,time:String,total:2});
+ assert.match(html,/data-account-manage="account-id" >我的设备与权益/);
+ assert.match(html,/data-account-manage="other-admin" disabled/);
+ assert.match(html,/data-account-check="account-id"[^>]*disabled/);
+});
