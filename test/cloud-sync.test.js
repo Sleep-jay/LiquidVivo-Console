@@ -23,19 +23,23 @@ function fixture(exchange={},pushResult={data:"registered",error:null}){
  const data={revision:'10',device_code:code,blocked:false,sponsor_revoked:false,bound:true,installation_authorized:true,
   revoked_license_ids:[],pairing_token:'',legacy_licenses:[],messages:[],grants:[{
    id:'b8c65347-ae5f-482d-a505-5ac8add32cd5',features:['status_bar','notification_island'],starts_at:'2026-01-01T00:00:00+00:00',ends_at:null}],...exchange};
- const claims=[],leaseQueries=[],clientKeys=[];
- const client={auth:{getUser:async token=>token==='valid-jwt'?{data:{user:{id:'test-user',is_anonymous:exchange.anonymous??false,email_confirmed_at:'2026-01-01T00:00:00Z'}}}:{data:{user:null},error:'bad-token'}},
+ const claims=[],leaseQueries=[],clientKeys=[],eventWrites=[];
+ const client={auth:{getUser:async token=>token==='installation-jwt'?{data:{user:{id:'test-installation',is_anonymous:true}}}:token==='valid-jwt'?{data:{user:{id:'test-user',is_anonymous:exchange.anonymous??false,email_confirmed_at:'2026-01-01T00:00:00Z'}}}:{data:{user:null},error:'bad-token'}},
   rpc:async(name,args)=>{
    if(name==='lv_sponsor_feature_deadline'){leaseQueries.push(args);return {data:exchange.deadline??null,error:exchange.deadline_error??null};}
+   if(name==='lv_record_security_event'){eventWrites.push(args);return {data:exchange.event_allowed!==false,error:exchange.event_error??null};}
    if(name==='lv_user_session_active')return {data:exchange.session_active!==false,error:null};calls++;assert.equal(args.p_actor,'test-user');
    if(name==='lv_cloud_push_registration'){pushCalls.push(args);return pushResult;}
+   if(name==='lv_connect_sponsor_account'){claims.push(args);return {data:exchange.connect_result??'connected',error:null};}
    if(name==='lv_claim_legacy_sponsor'){claims.push(args);return {data:exchange.claim_allowed!==false,error:null};}
    if(name==='lv_cloud_resume'){resumes++;const ok=!data.blocked&&!data.sponsor_revoked&&!data.revoked_license_ids.includes(args.p_license_id);if(ok)data.installation_authorized=true;return {data:ok,error:null};}
    assert.equal(name,'lv_cloud_exchange');return {data,error:null};}};
- new Function('Deno','createClient',js)({env:{get:n=>env[n]},serve:h=>handler=h},(_url,key)=>{clientKeys.push(key);return client;});
+ new Function('Deno','createClient',js)({env:{get:n=>env[n]},serve:h=>handler=h},(_url,key,options)=>{clientKeys.push(key);if(options?.global?.headers?.Authorization==='Bearer installation-jwt'&&exchange.installation_inactive)return {...client,rpc:async()=>({data:false,error:null})};return client;});
  const request=(body={},token='valid-jwt')=>handler(new Request('https://fixture.invalid/cloud-sync',{
   method:'POST',headers:token?{authorization:'Bearer '+token}:{},body:JSON.stringify({device_code:code,legacy_code:'',version:'603',label:'Test phone',nonce,receipts:[],...body})}));
- return {request,calls:()=>calls,resumes:()=>resumes,pushCalls,claims,leaseQueries,clientKeys};
+ const eventRequest=(body,token='valid-jwt')=>handler(new Request('https://fixture.invalid/cloud-sync',{
+  method:'POST',headers:token?{authorization:'Bearer '+token}:{},body:JSON.stringify(body)}));
+ return {request,calls:()=>calls,resumes:()=>resumes,pushCalls,claims,leaseQueries,clientKeys,eventWrites,eventRequest};
 }
 function proof(){
  const p={algorithm:'Ed25519',format_version:1,device_binding_version:2,device_code:code,expires_at:null,
@@ -49,6 +53,40 @@ function payload(text,domain){
  assert.equal(Buffer.from(e.delegation,'base64url').toString(),cert);
  return JSON.parse(raw);
 }
+test('event ingestion derives actor from Auth and rejects attribution overrides',async()=>{
+ const row={id:'12345678-1234-1234-1234-123456789abc',rule:'r3',build:700,at:'2026-11-13T00:00:00Z'};
+ const body={operation:'recovery_receipts',events:[row]};
+ const f=fixture();
+ assert.equal((await f.eventRequest({...body,account_id:'victim'})).status,400);
+ assert.equal((await f.eventRequest({...body,events:[{...row,device_id:'victim'}]})).status,400);
+ assert.equal((await f.eventRequest(body,null)).status,401);
+ assert.equal((await f.eventRequest(body,'bad-jwt')).status,401);
+ assert.equal(f.eventWrites.length,0);
+ const r=await f.eventRequest(body);
+ assert.equal(r.status,200);assert.deepEqual(await r.json(),{accepted:[row.id]});
+ assert.deepEqual(f.eventWrites,[{p_actor:'test-user',p_event:row.id,p_rule:'r3',p_origin:'client',p_build:700,p_client_at:row.at,p_installation:null}]);
+ assert.equal(f.calls(),0);assert.equal(f.leaseQueries.length,0);
+ const linked=fixture();
+ assert.equal((await linked.eventRequest({...body,installation_token:'installation-jwt'})).status,200);
+ assert.equal(linked.eventWrites[0].p_installation,'test-installation');
+ assert.equal((await linked.eventRequest({...body,installation_token:'bad-jwt'})).status,401);
+ assert.equal((await fixture({session_active:false}).eventRequest(body)).status,401);
+ const limited=await fixture({event_allowed:false}).eventRequest(body);
+ assert.deepEqual(await limited.json(),{accepted:[]});
+ assert.equal((await fixture({event_error:'db_error'}).eventRequest(body)).status,503);
+});
+
+test('compatibility candidates never invoke entitlement exchange or signing',async()=>{
+ for(const body of [
+  {operation:'legacy_sponsor_claim',license_proof:'LVR1-c948a7e1d3864b1fae2e795fae63d042'},
+  {operation:'sponsor_feature_lease',restored_state:'a9fd26f97b1642ce8274bd754100812d'}
+ ]){
+  const f=fixture();const r=await f.request(body);
+  assert.equal(r.status,403);assert.deepEqual(await r.json(),{error:'feature_unavailable'});
+  assert.equal(f.eventWrites.length,1);assert.equal(f.eventWrites[0].p_origin,'server');
+  assert.equal(f.calls(),0);assert.equal(f.leaseQueries.length,0);assert.equal(f.claims.length,0);
+ }
+});
 test('cloud handler signs canonical permanent grants and device/nonce-bound policy',async()=>{
  const f=fixture(),response=await f.request();assert.equal(response.status,200);
  const p=payload(await response.text(),'LiquidVivo/cloud-policy/v1\n');assert.equal(p.nonce,nonce);assert.equal(p.device_code,code);
@@ -179,5 +217,40 @@ test('disabling removes registration, and malformed provider input never reaches
  assert.equal(payload(await r.text(),'LiquidVivo/cloud-policy/v1\n').push_registration_status,'removed');assert.equal(f.pushCalls[0].p_enabled,false);
  for(const push of [{provider:'unknown',enabled:true,token:'valid-token-123'},{provider:'vivo',enabled:true,token:'bad token'},{provider:'vivo',enabled:false,token:'not-cleared'}]){
   const bad=fixture();assert.equal((await bad.request({push_registration:push})).status,503);assert.equal(bad.pushCalls.length,0);
+ }
+});
+
+function originalProof(device=code){
+ const fields=JSON.parse(Buffer.from(JSON.parse(proof()).payload,'base64url'));
+ const raw=canonical({...fields,key_id:'test-only-root',device_code:device});
+ return JSON.stringify({payload:b64(raw),signature:b64(sign(null,Buffer.from('LiquidVivo/license/v1\n'+raw),root.privateKey))});
+}
+test('ordinary account connects using both sessions and a root credential read by the app',async()=>{
+ const input={operation:'account_device_connect',installation_token:'installation-jwt',license_proof:originalProof()};
+ const f=fixture({connect_result:'migrated'}),r=await f.request(input);
+ assert.equal(r.status,200);assert.deepEqual(await r.json(),{connected:true,migrated:true});
+ assert.deepEqual(f.claims,[{p_actor:'test-user',p_installation:'test-installation',p_code:code,p_license_id:'b8c65347-ae5f-482d-a505-5ac8add32cd5'}]);
+ const fresh=fixture();assert.equal((await fresh.request({...input,license_proof:''})).status,200);
+ assert.equal(fresh.claims[0].p_license_id,null);
+});
+test('app connection rejects missing, inactive and anonymous account sessions before a claim',async()=>{
+ const input={operation:'account_device_connect',installation_token:'installation-jwt',license_proof:originalProof()};
+ for(const [configuration,patch,account,status] of [
+  [{},{},null,401],[{anonymous:true},{},'valid-jwt',403],
+  [{session_active:false},{},'valid-jwt',401],[{installation_inactive:true},{},'valid-jwt',401],
+  [{},{installation_token:'bad-jwt'},'valid-jwt',401],
+  [{},{license_proof:proof()},'valid-jwt',403],
+  [{},{license_proof:originalProof('LV2-'+'B'.repeat(51)+'A')},'valid-jwt',403],
+  [{},{license_proof:code},'valid-jwt',403]
+ ]){
+  const f=fixture(configuration);assert.equal((await f.request({...input,...patch},account)).status,status);
+  assert.equal(f.claims.length,0);
+ }
+});
+test('app connection reports server ownership and revocation denials without successful migration',async()=>{
+ for(const status of ['owned_by_another_account','device_restricted','original_license_required','legacy_claim_denied']){
+  const f=fixture({connect_result:status});
+  const r=await f.request({operation:'account_device_connect',installation_token:'installation-jwt'});
+  assert.equal(r.status,409);assert.deepEqual(await r.json(),{error:status});
  }
 });

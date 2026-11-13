@@ -1,3 +1,4 @@
+import {securityEventsView,eventReviewFields} from './security-events.js';
 import {createSignupConfirmation} from './signup-confirmation.js';
 import {deviceQueryHash,linkedDeviceFields} from './device-search.js';
 import {encodeReleaseNotes,decodeReleaseNotes} from './release-notes.js';
@@ -39,6 +40,7 @@ let authMode=recoveryRequested(location.search,location.hash)?'reset':'login', a
 let sponsorOrders=[],feedbackItems=[],sponsorReady=false,messageReady=false;
 let campaignClaims=[],campaignCodes=[],campaignReady=false;
 let pushJobs=[];
+let eventRows=[],eventFilter='all',eventCursor=null,eventHistory=[],eventBusy=false,eventError='',eventGeneration=0;
 let accounts=[],accountSelected=new Set(),accountCursor=null,accountTotal=0,accountReady=false,accountBusy=false,accountError='',includeInstallations=false,accountLoadToken=0,registrationPolicy=null;
 let deviceQuery='',deviceFilter='all',deviceSearchHash=null,deviceSearchGeneration=0;
 const listStates=new Map();
@@ -46,8 +48,8 @@ const listState=()=>{if(!listStates.has(section))listStates.set(section,{query:'
 const emailConfirmation=createEmailConfirmation({auth:api.auth,rpc,storage:sessionStorage,diagnose:()=>diagnoseGateway(config)});
 let bootFlight=null, workspaceReady=false, viewEpoch=0;
 let devicePage=1,devicePageSize=10;
-const icons = {devices:'▦',campaigns:'◷',messages:'▤',audit:'↗',users:'♙',account:'◉',sponsor:'♡',feedback:'▱'};
-const names = {devices:'设备与权益',campaigns:'限免活动',messages:'消息与内容',audit:'操作记录',users:'账号管理',account:'账号设置',sponsor:'赞助审核',feedback:'用户反馈'};
+const icons = {security:'◇',devices:'▦',campaigns:'◷',messages:'▤',audit:'↗',users:'♙',account:'◉',sponsor:'♡',feedback:'▱'};
+const names = {security:'安全事件',devices:'设备与权益',campaigns:'限免活动',messages:'消息与内容',audit:'操作记录',users:'账号管理',account:'账号设置',sponsor:'赞助审核',feedback:'用户反馈'};
 const time = v => v ? new Date(v).toLocaleString('zh-CN',{hour12:false}) : '尚未联系';
 const localDate = v => { const d=new Date(v); return new Date(d-d.getTimezoneOffset()*60000).toISOString().slice(0,16); };
 const dateField=(name,label,value)=>`<label>${label}<input name="${name}" type="datetime-local" value="${localDate(value)}" required></label>`;
@@ -142,6 +144,7 @@ async function refreshWorkspace(){
  const active=await api.rpc('lv_user_session_active').abortSignal(signal);if(active.error)throw active.error;if(!canApply())return;if(active.data!==true){await boot();return;}
  if(role.data!==admin){await boot();return;}
  if(admin){const ready=await api.rpc('lv_admin_session_ready').abortSignal(signal);if(ready.error)throw ready.error;if(!canApply())return;if(!ready.data){emailConfirmationPage();return;}}
+ if(admin&&section==='security'){await refreshSecurity();return;}
  if(!await load({canApply,signal}))return;
  if(admin&&section==='users'){await refreshAccounts({quiet:true});return;}
  if(admin&&section==='devices'){
@@ -246,12 +249,45 @@ function bindAccountEvents(){
  };
 }
 function accountView(){return toolbar('账号设置','管理登录与账号安全。')+`<section class="panel account-panel"><h2>登录身份</h2><dl><dt>邮箱</dt><dd>${esc(session.user.email)}</dd><dt>权限</dt><dd>${admin?'管理员 · 已完成邮箱确认':'普通用户'}</dd><dt>本机自动登录</dt><dd>${localStorage.getItem(storeKey)==='yes'?'已开启':'未开启'}</dd></dl><button class="secondary" id="recheck-role">重新验证权限</button><button class="secondary" id="change-password">修改密码</button><button class="secondary" id="logout-all">退出所有会话</button></section>${admin?memberDevices({...personalAccountData({devices,entitlements,userId:session.user.id}),campaigns,time,esc,embedded:true}):''}`;}
+async function refreshSecurity(){
+ if(!admin||section!=='security')return;
+ const generation=++eventGeneration,epoch=viewEpoch,user=session.user.id;
+ eventBusy=true;eventError='';
+ try {
+  const rows=await rpc('lv_admin_security_events',{p_before:eventCursor?.received_at??null,p_before_id:eventCursor?.id??null,p_state:eventFilter});
+  if(generation!==eventGeneration||epoch!==viewEpoch||session?.user.id!==user||!admin||section!=='security')return;
+  eventRows=rows.slice(0,10);
+ }catch(error){if(generation===eventGeneration)eventError=errorText(error);}
+ finally{if(generation===eventGeneration){eventBusy=false;if(epoch===viewEpoch&&admin&&section==='security')render();}}
+}
+function bindSecurityEvents(){
+ root.querySelector('#refresh-events').onclick=()=>void refreshSecurity();
+ root.querySelector('#event-filter').onchange=e=>{eventFilter=e.target.value;eventCursor=null;eventHistory=[];void refreshSecurity();};
+ root.querySelectorAll('[data-event-page=next]').forEach(button=>button.onclick=()=>{if(eventRows.length!==10||eventBusy)return;eventHistory.push(eventCursor);eventCursor=eventRows.at(-1);void refreshSecurity();});
+ root.querySelectorAll('[data-event-page=prev]').forEach(button=>button.onclick=()=>{if(eventBusy||!eventHistory.length)return;eventCursor=eventHistory.pop();void refreshSecurity();});
+ root.querySelectorAll('[data-event-review]').forEach(button=>button.onclick=()=>{
+  const item=eventRows.find(e=>e.id===button.dataset.eventReview);if(!item)return;
+  dialog('审核安全事件',eventReviewFields(item,esc),async form=>{
+   const saved=await rpc('lv_admin_security_review',{p_id:item.id,p_state:form.get('state'),p_note:form.get('note')});
+   if(saved!==true)throw Error('事件已不存在，请刷新。');
+   const action=form.get('action');
+   try {
+    if(action==='block_account'||action==='unblock_account')
+      await accountOperation(action==='block_account'?'block':'unblock',item.account_id);
+    if(action==='block_device'||action==='unblock_device')
+      await rpc('lv_manage',{p_action:action==='block_device'?'block':'unblock',p_ids:[item.device_id],p_data:{}});
+   }catch(error){toast('审核已保存，限制操作未确认完成，请核对账号或设备当前状态。');await refreshSecurity();throw error;}
+   await refreshSecurity();toast('审核及所选操作已完成。');
+  },'确认保存');
+ });
+}
 function auditView(){return toolbar('操作记录','关键变更留痕，方便核对与追溯。')+listControls({all:'全部记录'},'搜索操作、时间或账号')+`<section class="panel"><table><thead><tr><th>时间</th><th>操作</th><th>影响数量</th><th>操作账号 ID</th></tr></thead><tbody>${filtered(audit,x=>[x.action,x.actor,time(x.created_at),({grant:'授权 赞助',revoke:'撤销',block:'拉黑',unblock:'解除限制',unbind:'解绑'})[x.action]||'']).map(x=>`<tr><td>${time(x.created_at)}</td><td>${esc(x.action)}</td><td>${x.target_count}</td><td class="mono">${esc(x.actor)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty-cell">暂无操作记录</td></tr>'}</tbody></table></section>`;}
-function render(){if(!admin&&!['devices','messages','sponsor','feedback','account'].includes(section))section='devices';const supportContent=section==='sponsor'?sponsorView({admin,devices,orders:filtered(sponsorOrders,o=>[o.transaction_ref,o.response,o.provider,devices.find(d=>d.id===o.device_id)?.label,devices.find(d=>d.id===o.device_id)?.note],(o,f)=>f==='all'||o.status===f),time,esc,ready:sponsorReady}):section==='feedback'?feedbackView({admin,items:filtered(feedbackItems,f=>[f.title,f.body,f.reply],(x,f)=>f==='all'||x.status===f),time,esc,ready:sponsorReady,hasDevice:devices.some(d=>!d.blocked)}):null;const memberContent=!admin?(supportContent??(section==='devices'?memberDevices({devices,entitlements,campaigns,time,esc}):section==='messages'?memberMessages({messages:filtered(messages,m=>[m.title,m.body,messageKinds[m.kind]],(m,f)=>f==='all'||m.kind===f),time,esc}):accountView())):'';root.innerHTML=admin?shell(supportContent??(section==='devices'?deviceView():section==='account'?accountView():section==='users'?accountsView():section==='audit'?auditView():listView(section))):memberShell({content:memberContent,email:session.user.email,section,esc});root.querySelectorAll('[data-section]').forEach(b=>b.onclick=()=>{viewEpoch++;section=b.dataset.section;render();if(admin&&section==='users')void refreshAccounts();});document.querySelector('#logout').onclick=logout;document.querySelector('#refresh').onclick=async e=>{e.target.disabled=true;await boot();};
+function render(){if(!admin&&!['devices','messages','sponsor','feedback','account'].includes(section))section='devices';const supportContent=section==='sponsor'?sponsorView({admin,devices,orders:filtered(sponsorOrders,o=>[o.transaction_ref,o.response,o.provider,devices.find(d=>d.id===o.device_id)?.label,devices.find(d=>d.id===o.device_id)?.note],(o,f)=>f==='all'||o.status===f),time,esc,ready:sponsorReady}):section==='feedback'?feedbackView({admin,items:filtered(feedbackItems,f=>[f.title,f.body,f.reply],(x,f)=>f==='all'||x.status===f),time,esc,ready:sponsorReady,hasDevice:devices.some(d=>!d.blocked)}):null;const memberContent=!admin?(supportContent??(section==='devices'?memberDevices({devices,entitlements,campaigns,time,esc}):section==='messages'?memberMessages({messages:filtered(messages,m=>[m.title,m.body,messageKinds[m.kind]],(m,f)=>f==='all'||m.kind===f),time,esc}):accountView())):'';root.innerHTML=admin?shell(supportContent??(section==='devices'?deviceView():section==='account'?accountView():section==='users'?accountsView():section==='audit'?auditView():section==='security'?securityEventsView({rows:eventRows,filter:eventFilter,busy:eventBusy,error:eventError,hasNext:eventRows.length===10,hasPrevious:eventHistory.length>0,esc,time}):listView(section))):memberShell({content:memberContent,email:session.user.email,section,esc});root.querySelectorAll('[data-section]').forEach(b=>b.onclick=()=>{viewEpoch++;section=b.dataset.section;render();if(admin&&section==='users')void refreshAccounts();if(admin&&section==='security')void refreshSecurity();});document.querySelector('#logout').onclick=logout;if(document.querySelector('#refresh'))document.querySelector('#refresh').onclick=async e=>{e.target.disabled=true;await boot();};
  if(['sponsor','feedback'].includes(section)||(!admin&&section==='messages')){
    const opts=section==='sponsor'?{all:'全部赞助记录',pending:'待核对',approved:'已确认',rejected:'未通过'}:section==='feedback'?{all:'全部反馈',open:'待回复',replied:'已回复',closed:'已结束'}:{all:'全部消息',...messageKinds};
    const top=root.querySelector('.topbar');if(top)top.insertAdjacentHTML('afterend',listControls(opts,section==='sponsor'?'搜索订单或设备':section==='feedback'?'搜索反馈':'搜索消息'));
  }
+ if(admin&&section==='security')bindSecurityEvents();
  bindListControls();bindMessageManagement();bindCampaignEvents();if(admin&&section==='users')bindAccountEvents();
  // Cloud management is usable independently; never imply that old APKs consume these rows.
  const notice=document.createElement('div');notice.className='sync-notice';notice.textContent='云端规则在已接入的新版 App 中约每小时同步一次；休眠可能延迟。可在 App 赞助中心立即同步，旧版 APK 不会自动接入。';if(admin)document.querySelector('.topbar').after(notice);

@@ -2,7 +2,7 @@ import {decodeReleaseNotes} from './release-notes.js';
 // Member-only presentation. No device inventory, bulk actions, or management navigation.
 export function memberShell({content,email,section,esc}) {
   const tabs={devices:'我的设备',sponsor:'赞助支持',messages:'我的消息',feedback:'意见反馈',account:'账号设置'};
-  return `<div class="member-app"><header class="member-header"><a class="brand" href="#"><span class="brand-mark">L<span>V</span></span>LiquidVivo <small>用户中心</small></a><nav aria-label="用户中心">${Object.entries(tabs).map(([key,title])=>`<button data-section="${key}" class="${section===key?'active':''}">${title}</button>`).join('')}</nav><button id="logout" class="text-button">退出登录</button></header><main class="member-main">${content}</main><footer class="member-footer">${esc(email)} · LiquidVivo 用户中心</footer></div>`;
+  return `<div class="member-app"><header class="member-header"><a class="brand" href="#"><span class="brand-mark">L<span>V</span></span>LiquidVivo <small>用户中心</small></a><nav aria-label="用户中心">${Object.entries(tabs).map(([key,title])=>`<button data-section="${key}" class="${section===key?'active':''}">${title}</button>`).join('')}</nav><button id="logout" class="text-button">退出登录</button></header><main class="member-main">${content}</main><footer class="member-footer">${esc(email)} · LiquidVivo 用户中心<p>App 为排查软件篡改可能上报有限安全事件、账号或匿名安装关联、版本与时间。报告按 30 天保留策略清理，由管理员人工核查。</p></footer></div>`;
 }
 export function trialRemaining(end,now=Date.now()){const minutes=Math.max(0,Math.ceil((Date.parse(end)-now)/60000));return minutes===0?'已到期':`剩余 ${Math.floor(minutes/1440)} 天 ${Math.floor(minutes%1440/60)} 小时 ${minutes%60} 分钟`;}
 export function personalAccountData({devices,entitlements,userId}) {

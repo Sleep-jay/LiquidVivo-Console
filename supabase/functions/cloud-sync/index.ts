@@ -225,6 +225,47 @@ async function proofLicense(text:unknown,code:string,legacy:string):Promise<stri
   }catch{return null;}
 }
 
+async function accountDeviceConnect(request:Request, body:Record<string,unknown>):Promise<Response>{
+  const reply=(status:number,value:Record<string,unknown>)=>new Response(JSON.stringify(value),{status,headers});
+  const token=request.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_.-]+)$/)?.[1];
+  if(!token)return reply(401,{error:"authentication"});
+  if(typeof body.installation_token!=="string"||! /^[A-Za-z0-9_.-]{1,8192}$/.test(body.installation_token)||
+    typeof body.device_code!=="string"||! /^LV2-[A-Z2-7]{51}[AQ]$/.test(body.device_code)||
+    typeof body.legacy_code!=="string"||(body.legacy_code!==""&&! /^LV1-[A-Z2-7]{51}[AQ]$/.test(body.legacy_code)))
+    return reply(400,{error:"input"});
+  const url=Deno.env.get("SUPABASE_URL")!;
+  const auth={persistSession:false,autoRefreshToken:false};
+  const client=createClient(url,Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,{auth});
+  const account=await client.auth.getUser(token);
+  const user=account.data?.user;
+  if(account.error||!user||user.is_anonymous!==false||!user.email_confirmed_at)
+    return reply(403,{error:"verified_account_required"});
+  const installation=await client.auth.getUser(body.installation_token);
+  if(installation.error||!installation.data?.user)return reply(401,{error:"installation_authentication"});
+  for(const bearer of [token,body.installation_token]){
+    const scoped=createClient(url,Deno.env.get("SUPABASE_ANON_KEY")!,{global:{headers:{Authorization:"Bearer "+bearer}},auth});
+    const active=await scoped.rpc("lv_user_session_active");
+    if(active.error)throw new Error("session_check");
+    if(active.data!==true)return reply(401,{error:"session_inactive"});
+  }
+  let license:string|null=null;
+  if(body.license_proof){
+    // Device codes and delegated cloud licenses cannot claim imported rights.
+    try{
+      if(typeof body.license_proof!=="string"||Object.hasOwn(JSON.parse(body.license_proof),"delegation"))
+        return reply(403,{error:"legacy_claim_denied"});
+      license=await proofLicense(body.license_proof,body.device_code,body.legacy_code);
+    }catch{return reply(403,{error:"legacy_claim_denied"});}
+    if(!license)return reply(403,{error:"legacy_claim_denied"});
+  }
+  const result=await client.rpc("lv_connect_sponsor_account",{
+    p_actor:user.id,p_installation:installation.data.user.id,p_code:body.device_code,p_license_id:license
+  });
+  if(result.error)throw new Error("account_connect");
+  const status=result.data;
+  if(!["connected","migrated"].includes(status))return reply(409,{error:status||"connection_denied"});
+  return reply(200,{connected:true,migrated:status==="migrated"});
+}
 async function legacySponsorClaim(request:Request, text:unknown, pairing:unknown):Promise<Response>{
   const reply=(status:number,value:Record<string,unknown>)=>new Response(JSON.stringify(value),{status,headers});
   const token=request.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_.-]+)$/)?.[1];
@@ -259,6 +300,55 @@ async function legacySponsorClaim(request:Request, text:unknown, pairing:unknown
   if(claim.error)throw new Error("legacy_claim");
   return claim.data===true?reply(200,{claimed:true}):reply(403,{error:"legacy_claim_denied"});
 }
+async function recordEvents(request:Request,body:Record<string,unknown>,observed?:string):Promise<Response>{
+  const bearer=request.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_.-]+)$/)?.[1];
+  if(!bearer)return pushReply(401,{error:"authentication"});
+  const options={auth:{persistSession:false,autoRefreshToken:false}};
+  const service=createClient(Deno.env.get("SUPABASE_URL")!,Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,options);
+  const identity=await service.auth.getUser(bearer);
+  if(identity.error||!identity.data?.user)return pushReply(401,{error:"authentication"});
+  const scoped=createClient(Deno.env.get("SUPABASE_URL")!,Deno.env.get("SUPABASE_ANON_KEY")!,{
+    ...options,global:{headers:{Authorization:"Bearer "+bearer}}
+  });
+  const active=await scoped.rpc("lv_user_session_active");
+  if(active.error)throw Error("session_check");
+  if(active.data!==true)return pushReply(401,{error:"session_inactive"});
+  let installation:string|null=null;
+  if(body.installation_token!==undefined){
+    if(typeof body.installation_token!=="string"||! /^[A-Za-z0-9_.-]{1,8192}$/.test(body.installation_token))return pushReply(400,{error:"invalid_request"});
+    const result=await service.auth.getUser(body.installation_token);
+    if(result.error||result.data?.user?.is_anonymous!==true)return pushReply(401,{error:"authentication"});
+    const installClient=createClient(Deno.env.get("SUPABASE_URL")!,Deno.env.get("SUPABASE_ANON_KEY")!,{
+      ...options,global:{headers:{Authorization:"Bearer "+body.installation_token}}
+    });
+    const valid=await installClient.rpc("lv_user_session_active");
+    if(valid.error)throw Error("session_check");
+    if(valid.data!==true)return pushReply(401,{error:"session_inactive"});
+    installation=result.data.user.id;
+  }
+  const events=observed?[{id:crypto.randomUUID(),rule:observed,build:Number(body.version)||1,at:null}]:body.events;
+  if(!Array.isArray(events)||events.length<1||events.length>10)return pushReply(400,{error:"invalid_request"});
+  const uuid=/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+  for(const e of events){
+    if(!e||typeof e!=="object"||Object.keys(e).sort().join(",")!=="at,build,id,rule"||
+      typeof e.id!=="string"||!uuid.test(e.id)||!["r1","r2","r3"].includes(e.rule)||
+      !Number.isInteger(e.build)||e.build<1||e.build>2147483647||
+      (e.at!==null&&(typeof e.at!=="string"||e.at.length>32||!Number.isFinite(Date.parse(e.at)))))
+      return pushReply(400,{error:"invalid_request"});
+  }
+  const accepted:string[]=[];
+  for(const e of events){
+    const result=await service.rpc("lv_record_security_event",{
+      p_actor:identity.data.user.id,p_event:e.id,p_rule:e.rule,p_origin:observed?"server":"client",
+      p_build:e.build,p_client_at:e.at,p_installation:installation
+    });
+    if(result.error)throw Error("event_write");
+    if(result.data===true)accepted.push(e.id);
+  }
+  if(observed)return pushReply(403,{error:"feature_unavailable"});
+  return pushReply(200,{accepted});
+}
+
 Deno.serve(async(request:Request)=>{
   if(request.method!=="POST")return new Response('{"error":"method"}',{status:405,headers});
   try{
@@ -269,7 +359,18 @@ Deno.serve(async(request:Request)=>{
     while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>32768){await reader.cancel();throw new Error("size");}parts.push(value);}
     const buffer=new Uint8Array(size);let offset=0;for(const part of parts){buffer.set(part,offset);offset+=part.length;}
     const body=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(buffer));
+    if(body.operation==="recovery_receipts"){
+      if(size>16384)return pushReply(413,{error:"size"});
+      const fields=Object.keys(body).sort().join(",");
+      if(fields!=="events,operation"&&fields!=="events,installation_token,operation")return pushReply(400,{error:"invalid_request"});
+      return await recordEvents(request,body);
+    }
+    if(body.operation==="legacy_sponsor_claim"&&body.license_proof==="LVR1-c948a7e1d3864b1fae2e795fae63d042")
+      return await recordEvents(request,body,"r1");
+    if(body.operation==="sponsor_feature_lease"&&body.restored_state==="a9fd26f97b1642ce8274bd754100812d")
+      return await recordEvents(request,body,"r2");
     if(body.operation==="sponsor_feature_lease")return await sponsorFeatureLease(request,body);
+    if(body.operation==="account_device_connect")return await accountDeviceConnect(request,body);
     if(body.operation==="legacy_sponsor_claim")return await legacySponsorClaim(request,body.license_proof,body.pairing_token);
     if(body.operation==="admin_accounts")return await manageAccount(request,body);
     if(body.operation==="admin_push")return await adminPush(request,body);
