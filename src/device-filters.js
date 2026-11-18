@@ -4,6 +4,7 @@ export function deviceState(device,grants,now=Date.now()){
   return {sponsored:active.some(g=>!g.ends_at),temporary:active.length>0&&!active.some(g=>!g.ends_at),active:active.length>0};
 }
 export function matchesDeviceFilter(device,filter,grants,now=Date.now()){
+  if(filter==='inactive_week'||filter==='cleanup_eligible')return device[filter]===true;
   const s=deviceState(device,grants,now);
   switch(filter){
     case 'all':return true;case 'sponsored':return s.sponsored;case 'unsponsored':return !s.sponsored;
@@ -13,6 +14,7 @@ export function matchesDeviceFilter(device,filter,grants,now=Date.now()){
   }
 }
 export const deviceSearchFields=d=>[d.label,d.note,d.device_code,d.device_hash,d.id,d.app_version,...(d.campaign_titles||[]),d.blocked?'受限 黑名单 blocked':'正常',d.owner_id?'已绑定 bound':'未绑定 unbound'];
-export function deviceFilterOptions(value='all'){
-  return Object.entries(deviceFilters).map(([key,label])=>`<option value="${key}" ${key===value?'selected':''}>${label}</option>`).join('');
+export function deviceFilterOptions(value='all',cleanupReady=false){
+  const filters=cleanupReady?{...deviceFilters,inactive_week:'7 天未联网',cleanup_eligible:'7 天未联网 · 可清理'}:deviceFilters;
+  return Object.entries(filters).map(([key,label])=>`<option value="${key}" ${key===value?'selected':''}>${label}</option>`).join('');
 }

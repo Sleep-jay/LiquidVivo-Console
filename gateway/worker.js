@@ -1,9 +1,13 @@
+import {signupPath,signupPage,verifySignup} from './signup-confirmation.js';
 // Owner-controlled HTTPS gateway. The upstream is fixed; never accept a target URL.
 // No root/child signing key, service_role, request-body logging, or entitlement cache.
 const UPSTREAM='https://drboqyxccvvsxcbusvrv.supabase.co';
+const SIGNUP_ORIGIN='https://liquidvivo-d2g9srktc0d37a3a6-1521254198.ap-shanghai.app.tcloudbase.com';
+const PUBLISHABLE_KEY='sb_publishable_B1wNxFsun9jNIP8LB_BX-w_3e1eIPuT';
 const MAX_BODY=131072;
 const METHODS=new Set(['GET','HEAD','POST','PUT','DELETE']);
 function allowed(path,method){
+ if(path===signupPath)return method==='GET'||method==='HEAD'||method==='POST';
  if(path==='/functions/v1/cloud-sync')return method==='POST';
  if(/^\/rest\/v1\/rpc\/lv_[a-z_]+$/.test(path))return method==='POST';
  if(/^\/rest\/v1\/lv_[a-z_]+$/.test(path))return ['GET','HEAD'].includes(method);
@@ -23,7 +27,14 @@ export default {
   const site=env.WEBSITE_ORIGIN||'https://sleep-jay.github.io';
   const h=cors(origin,site);const url=new URL(request.url);
   if(url.protocol!=='https:')return failure(400,'https_required',h);
-  if(origin&&origin!==site)return failure(403,'origin_denied',h);
+  const signup=url.pathname===signupPath;
+  if(origin&&origin!==site&&!(signup&&origin===SIGNUP_ORIGIN))return failure(403,'origin_denied',h);
+  if(signup&&['GET','HEAD'].includes(request.method)){
+   h.set('Content-Type','text/html; charset=utf-8');
+   h.set('Referrer-Policy','no-referrer');
+   h.set('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+   return new Response(request.method==='HEAD'?null:signupPage,{headers:h});
+  }
   if(request.method==='OPTIONS'){
    const method=request.headers.get('Access-Control-Request-Method');
    if(!origin||!allowed(url.pathname,method))return failure(403,'route_denied',h);
@@ -46,6 +57,11 @@ export default {
    while(true){const {value,done}=await reader.read();if(done)break;length+=value.length;
     if(length>MAX_BODY){await reader.cancel();return failure(413,'request_too_large',h);}parts.push(value);}
    body=new Uint8Array(length);let offset=0;for(const part of parts){body.set(part,offset);offset+=part.length;}
+  }
+  if(signup){
+   if(!body||body.length>512||!/^application\/json(?:;|$)/i.test(request.headers.get('Content-Type')||''))return failure(400,'invalid_confirmation',h);
+   const status=await verifySignup(body,UPSTREAM,PUBLISHABLE_KEY);
+   return new Response(null,{status,headers:h});
   }
   const headers=new Headers();
   for(const key of ['authorization','apikey','content-type','x-client-info','prefer','range','x-supabase-api-version','accept-profile','content-profile']){

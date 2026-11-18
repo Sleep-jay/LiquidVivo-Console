@@ -45,3 +45,25 @@ test('CloudBase adapter does not follow redirects or expose upstream errors',asy
     assert.deepEqual(await (await realFetch(base+'/auth/v1/settings')).json(),{error:'upstream_unavailable'});
   });
 });
+test('signup opens a standalone page and only POST verifies without returning a session',async()=>{
+  let calls=0;
+  await withServer(async(url,options)=>{
+    calls++;
+    assert.equal(url,'https://drboqyxccvvsxcbusvrv.supabase.co/auth/v1/verify');
+    assert.deepEqual(JSON.parse(options.body),{type:'signup',token_hash:'a'.repeat(64)});
+    return new Response('{"access_token":"test-session"}',{headers:{'set-cookie':'test-session=1'}});
+  },async base=>{
+    const path=base+'/confirm-signup';
+    const page=await realFetch(path);
+    assert.match(await page.text(),/注册成功/);
+    assert.equal(page.headers.get('referrer-policy'),'no-referrer');
+    assert.equal(calls,0);
+    assert.equal((await realFetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,400);
+    const verified=await realFetch(path,{method:'POST',
+      headers:{'Content-Type':'application/json',Origin:'https://liquidvivo-d2g9srktc0d37a3a6-1521254198.ap-shanghai.app.tcloudbase.com'},
+      body:JSON.stringify({token:'a'.repeat(64)})});
+    assert.equal(verified.status,204);assert.equal(await verified.text(),'');
+    assert.equal(verified.headers.get('set-cookie'),null);
+    assert.equal(calls,1);
+  });
+});
