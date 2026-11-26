@@ -297,6 +297,14 @@ function render(){if(!admin&&!['devices','messages','sponsor','feedback','accoun
  const notice=document.createElement('div');notice.className='sync-notice';notice.textContent='云端规则在已接入的新版 App 中约每小时同步一次；休眠可能延迟。可在 App 赞助中心立即同步，旧版 APK 不会自动接入。';if(admin)document.querySelector('.topbar').after(notice);
  if(section==='devices')bindDeviceEvents();
  root.querySelectorAll('#bind-device,[data-bind-device]').forEach(b=>b.addEventListener('click',openMemberBind));
+ root.querySelectorAll('[data-unbind-my-device]').forEach(button=>button.addEventListener('click',()=>{
+   const device=devices.find(d=>d.id===button.dataset.unbindMyDevice&&d.owner_id===session.user.id);
+   if(!device)return;
+   dialog('解除设备绑定',`<p>解除「${esc(device.label||'我的设备')}」（${esc(device.device_hash.slice(0,16))}…）的绑定。账号赞助权益将保留，解绑的设备在当前权益验证凭证到期后停止使用。</p>`,async()=>{
+     await rpc('lv_unbind_my_device',{p_device:device.id});
+     await load();render();toast('设备已解除绑定');
+   },'确认解除绑定');
+ }));
  root.querySelectorAll('[data-claim-legacy]').forEach(b=>b.addEventListener('click',openLegacySponsorClaim));
  bindSupportEvents();
  document.querySelector('#new-item')?.addEventListener('click',()=>section==='messages'?messageDialog():campaignDialog());
@@ -477,7 +485,11 @@ function issueLegacySponsorPairing(deviceId){
  },'签发');
 }
 
-function openMemberBind(){dialog('绑定我的设备',`<label>完整设备码<input name="code" autocomplete="off" required></label><label>一次性配对凭证<input name="token" autocomplete="off" minlength="32" maxlength="32" required></label><p>打开新版 App 的赞助中心，点击立即同步，复制设备码和配对码。配对码 15 分钟有效。绑定新手机后将解除旧手机的绑定，账号赞助权益会保留。</p>`,async f=>{await rpc('lv_bind_device',{p_hash:await hashDevice(f.get('code').trim()),p_token:f.get('token').trim()});await load();render();toast('设备绑定成功');},'确认绑定');}
+function openMemberBind(){dialog('绑定我的设备',`<label>完整设备码<input name="code" autocomplete="off" required></label><label>一次性配对凭证<input name="token" autocomplete="off" minlength="32" maxlength="32" required></label><p>打开 App 的赞助中心，点击立即同步，复制设备码和配对码。配对码 15 分钟有效。每个账号可绑定两台设备。要换入第三台，请先在「我的设备」解除其中一台的绑定。</p>`,async f=>{
+  try { await rpc('lv_bind_device',{p_hash:await hashDevice(f.get('code').trim()),p_token:f.get('token').trim()}); }
+  catch(error){if(error?.message==='Device limit reached (2)')throw Error('已绑定两台设备，请先解除其中一台的绑定。');throw error;}
+  await load();render();toast('设备绑定成功');
+},'确认绑定');}
 
 function openLegacySponsorClaim(){
  dialog('迁移旧赞助',`<label>原离线授权文件<input name="license" type="file" accept=".json,application/json" required></label><label>管理员提供的迁移配对码<input name="pairing" autocomplete="off" pattern="[0-9a-f]{32}" required></label><p>选择原离线授权 JSON 文件，并填写核对后由管理员提供的一次性配对码。</p>`,async form=>{
