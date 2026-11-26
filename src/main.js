@@ -490,9 +490,9 @@ function openMemberBind(){dialog('绑定我的设备',`<label>完整设备码<in
   catch(error){
     const messages={
       'Device limit reached (2)':'已绑定两台设备，请先解除其中一台的绑定。',
-      primary_city_unverified:'暂未识别第一台手机所在城市，请先在第一台的赞助中心同步。',
-      device_city_unverified:'暂未识别第二台手机所在城市，请在第二台的赞助中心立即同步并重新生成配对码。',
-      device_city_mismatch:'两台手机识别到的城市不同。请在同一城市使用同一账号后重新同步。'
+      primary_city_unverified:'暂未识别第一台手机所在的省级地区，请先在第一台的赞助中心同步。',
+      device_city_unverified:'暂未识别第二台手机所在的省级地区，请在第二台的赞助中心立即同步并重新生成配对码。',
+      device_city_mismatch:'两台手机识别到的省级地区不同。请在同一省、自治区、直辖市或特别行政区使用同一账号后重新同步。'
     };
     if(Object.hasOwn(messages,error?.message))throw Error(messages[error.message]);
     throw error;
