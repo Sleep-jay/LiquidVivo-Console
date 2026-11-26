@@ -487,7 +487,16 @@ function issueLegacySponsorPairing(deviceId){
 
 function openMemberBind(){dialog('绑定我的设备',`<label>完整设备码<input name="code" autocomplete="off" required></label><label>一次性配对凭证<input name="token" autocomplete="off" minlength="32" maxlength="32" required></label><p>打开 App 的赞助中心，点击立即同步，复制设备码和配对码。配对码 15 分钟有效。每个账号可绑定两台设备。要换入第三台，请先在「我的设备」解除其中一台的绑定。</p>`,async f=>{
   try { await rpc('lv_bind_device',{p_hash:await hashDevice(f.get('code').trim()),p_token:f.get('token').trim()}); }
-  catch(error){if(error?.message==='Device limit reached (2)')throw Error('已绑定两台设备，请先解除其中一台的绑定。');throw error;}
+  catch(error){
+    const messages={
+      'Device limit reached (2)':'已绑定两台设备，请先解除其中一台的绑定。',
+      primary_city_unverified:'暂未识别第一台手机所在城市，请先在第一台的赞助中心同步。',
+      device_city_unverified:'暂未识别第二台手机所在城市，请在第二台的赞助中心立即同步并重新生成配对码。',
+      device_city_mismatch:'两台手机识别到的城市不同。请在同一城市使用同一账号后重新同步。'
+    };
+    if(Object.hasOwn(messages,error?.message))throw Error(messages[error.message]);
+    throw error;
+  }
   await load();render();toast('设备绑定成功');
 },'确认绑定');}
 
