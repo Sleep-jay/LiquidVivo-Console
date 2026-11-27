@@ -39,7 +39,7 @@ let signupConfirmation;
 let deviceCleanupReady=false;
 const recoveryMailer=createRecoveryMailer({auth:api.auth,diagnose:()=>diagnoseGateway(config)});
 let authMode=recoveryRequested(location.search,location.hash)?'reset':'login', authBusy=false, recovery=false;
-let sponsorOrders=[],feedbackItems=[],sponsorReady=false,messageReady=false;
+let sponsorOrders=[],feedbackItems=[],sponsorReady=false,messageReady=false,memberMessagesUnavailable=false;
 let campaignClaims=[],campaignCodes=[],campaignReady=false;
 let pushJobs=[];
 let eventRows=[],eventFilter='all',eventCursor=null,eventHistory=[],eventBusy=false,eventError='',eventGeneration=0;
@@ -110,7 +110,10 @@ function emailConfirmationPage(){
 async function load({canApply=()=>true,signal}={}){
  const request=q=>signal?q.abortSignal(signal):q;
  const lists=await Promise.all(['lv_devices','lv_entitlements','lv_messages','lv_campaigns',...(admin?['lv_audit']:[])].map(table=>table==='lv_devices'&&admin?loadAdminDevices((name,args)=>request(api.rpc(name,args))):request(api.from(table).select(table==='lv_devices'?'id,device_hash,owner_id,label,blocked,app_version,last_seen,created_at':'*').order('created_at',{ascending:false}).limit(1000))));
- for(const r of lists)if(r.error)throw r.error;
+ const messageResult=lists[2];
+ const messageUnavailable=!admin&&Boolean(messageResult.error)&&
+   (messageResult.status===0||messageResult.status===433||messageResult.status>=500);
+ for(const r of lists)if(r.error&&!(r===messageResult&&messageUnavailable))throw r.error;
  let ready=false;
  if(admin){const r=await request(api.rpc('lv_admin_message_management_ready'));if(r.error&&!['PGRST202','42883'].includes(r.error.code))throw r.error;ready=r.data===true&&!r.error;}
  const extra=await Promise.all(['lv_sponsor_orders','lv_feedback'].map(table=>request(api.from(table).select('*').order('created_at',{ascending:false}).limit(1000))));
@@ -122,6 +125,8 @@ async function load({canApply=()=>true,signal}={}){
  // Commit a complete snapshot only while the initiating view/session is still current.
  if(!canApply())return false;
  [devices,entitlements,messages,campaigns,audit]=lists.map(r=>r.data);audit ||= [];
+ memberMessagesUnavailable=messageUnavailable;
+ messages ??= [];
  deviceCleanupReady=admin&&lists[0].cleanupReady===true;
  if(!deviceCleanupReady&&['inactive_week','cleanup_eligible'].includes(deviceFilter))deviceFilter='all';
  campaignReady=campaignData.every(r=>!r.error);campaignClaims=campaignData[0]?.data||[];campaignCodes=campaignData[1]?.data||[];
@@ -286,7 +291,7 @@ function bindSecurityEvents(){
  });
 }
 function auditView(){return toolbar('操作记录','关键变更留痕，方便核对与追溯。')+listControls({all:'全部记录'},'搜索操作、时间或账号')+`<section class="panel"><table><thead><tr><th>时间</th><th>操作</th><th>影响数量</th><th>操作账号 ID</th></tr></thead><tbody>${filtered(audit,x=>[x.action,x.actor,time(x.created_at),({grant:'授权 赞助',revoke:'撤销',block:'拉黑',unblock:'解除限制',unbind:'解绑'})[x.action]||'']).map(x=>`<tr><td>${time(x.created_at)}</td><td>${esc(x.action)}</td><td>${x.target_count}</td><td class="mono">${esc(x.actor)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty-cell">暂无操作记录</td></tr>'}</tbody></table></section>`;}
-function render(){if(!admin&&!['devices','messages','sponsor','feedback','account'].includes(section))section='devices';const supportContent=section==='sponsor'?sponsorView({admin,devices,orders:filtered(sponsorOrders,o=>[o.transaction_ref,o.response,o.provider,devices.find(d=>d.id===o.device_id)?.label,devices.find(d=>d.id===o.device_id)?.note],(o,f)=>f==='all'||o.status===f),time,esc,ready:sponsorReady}):section==='feedback'?feedbackView({admin,items:filtered(feedbackItems,f=>[f.title,f.body,f.reply],(x,f)=>f==='all'||x.status===f),time,esc,ready:sponsorReady,hasDevice:devices.some(d=>!d.blocked)}):null;const memberContent=!admin?(supportContent??(section==='devices'?memberDevices({devices,entitlements,campaigns,time,esc}):section==='messages'?memberMessages({messages:filtered(messages,m=>[m.title,m.body,messageKinds[m.kind]],(m,f)=>f==='all'||m.kind===f),time,esc}):accountView())):'';root.innerHTML=admin?shell(supportContent??(section==='devices'?deviceView():section==='account'?accountView():section==='users'?accountsView():section==='audit'?auditView():section==='security'?securityEventsView({rows:eventRows,filter:eventFilter,busy:eventBusy,error:eventError,hasNext:eventRows.length===10,hasPrevious:eventHistory.length>0,esc,time}):listView(section))):memberShell({content:memberContent,email:session.user.email,section,esc});root.querySelectorAll('[data-section]').forEach(b=>b.onclick=()=>{viewEpoch++;section=b.dataset.section;render();if(admin&&section==='users')void refreshAccounts();if(admin&&section==='security')void refreshSecurity();});document.querySelector('#logout').onclick=logout;if(document.querySelector('#refresh'))document.querySelector('#refresh').onclick=async e=>{e.target.disabled=true;await boot();};
+function render(){if(!admin&&!['devices','messages','sponsor','feedback','account'].includes(section))section='devices';const supportContent=section==='sponsor'?sponsorView({admin,devices,orders:filtered(sponsorOrders,o=>[o.transaction_ref,o.response,o.provider,devices.find(d=>d.id===o.device_id)?.label,devices.find(d=>d.id===o.device_id)?.note],(o,f)=>f==='all'||o.status===f),time,esc,ready:sponsorReady}):section==='feedback'?feedbackView({admin,items:filtered(feedbackItems,f=>[f.title,f.body,f.reply],(x,f)=>f==='all'||x.status===f),time,esc,ready:sponsorReady,hasDevice:devices.some(d=>!d.blocked)}):null;const memberContent=!admin?(supportContent??(section==='devices'?memberDevices({devices,entitlements,campaigns,time,esc}):section==='messages'?memberMessages({unavailable:memberMessagesUnavailable,messages:filtered(messages,m=>[m.title,m.body,messageKinds[m.kind]],(m,f)=>f==='all'||m.kind===f),time,esc}):accountView())):'';root.innerHTML=admin?shell(supportContent??(section==='devices'?deviceView():section==='account'?accountView():section==='users'?accountsView():section==='audit'?auditView():section==='security'?securityEventsView({rows:eventRows,filter:eventFilter,busy:eventBusy,error:eventError,hasNext:eventRows.length===10,hasPrevious:eventHistory.length>0,esc,time}):listView(section))):memberShell({content:memberContent,email:session.user.email,section,esc});root.querySelectorAll('[data-section]').forEach(b=>b.onclick=()=>{viewEpoch++;section=b.dataset.section;render();if(admin&&section==='users')void refreshAccounts();if(admin&&section==='security')void refreshSecurity();});document.querySelector('#logout').onclick=logout;if(document.querySelector('#refresh'))document.querySelector('#refresh').onclick=async e=>{e.target.disabled=true;await boot();};
  if(['sponsor','feedback'].includes(section)||(!admin&&section==='messages')){
    const opts=section==='sponsor'?{all:'全部赞助记录',pending:'待核对',approved:'已确认',rejected:'未通过'}:section==='feedback'?{all:'全部反馈',open:'待回复',replied:'已回复',closed:'已结束'}:{all:'全部消息',...messageKinds};
    const top=root.querySelector('.topbar');if(top)top.insertAdjacentHTML('afterend',listControls(opts,section==='sponsor'?'搜索订单或设备':section==='feedback'?'搜索反馈':'搜索消息'));
